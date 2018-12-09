@@ -157,7 +157,6 @@ static void
 test_orthogonal_transitions (void)
 {
   g_autoptr(GsmStateMachine) sm = NULL;
-  g_auto(GValue) value = G_VALUE_INIT;
 
   sm = gsm_state_machine_new (TEST_TYPE_STATE_MACHINE);
 
@@ -210,6 +209,87 @@ test_orthogonal_transitions (void)
                               NULL);
 }
 
+
+static void
+test_output (void)
+{
+  g_autoptr(GsmStateMachine) sm = NULL;
+  g_auto(GValue) value = G_VALUE_INIT;
+  g_auto(GValue) value_bool = G_VALUE_INIT;
+  gint counter_output_updated = 0;
+
+  sm = gsm_state_machine_new (TEST_TYPE_STATE_MACHINE);
+
+  gsm_state_machine_add_input (sm,
+                               g_param_spec_boolean ("bool", "Bool1", "A test input boolean", FALSE, 0));
+  gst_state_machine_create_default_condition (sm, "bool");
+
+  gsm_state_machine_add_input (sm,
+                               g_param_spec_float ("float", "Float", "A float input", 0, 100, 0, 0));
+  gsm_state_machine_add_output (sm,
+                               g_param_spec_float ("float", "Float", "A float output", 0, 100, 0, 0));
+
+  g_object_connect (sm,
+                    "swapped-signal::output-changed::float", count_signal, &counter_output_updated,
+                    NULL);
+
+  gsm_state_machine_map_output (sm, TEST_STATE_A, "float", "float");
+  g_value_init (&value, G_TYPE_FLOAT);
+  g_value_set_float (&value, 20);
+  gsm_state_machine_set_input_value (sm, "float", &value);
+
+  /* Set value to 10 in initial state and check that it comes through */
+  g_value_set_float (&value, 10);
+  gsm_state_machine_set_output_value (sm, TEST_STATE_INIT, "float", &value);
+  g_value_unset (&value);
+  gsm_state_machine_get_output_value (sm, "float", &value);
+  g_assert_cmpfloat (g_value_get_float (&value), ==, 10);
+  g_assert_cmpint (counter_output_updated, ==, 1);
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT, TEST_STATE_A,
+                              NULL);
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_A, TEST_STATE_B,
+                              "bool", NULL);
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_B, TEST_STATE_A,
+                              "!bool", NULL);
+
+
+  g_value_init (&value_bool, G_TYPE_BOOLEAN);
+  g_value_set_boolean (&value_bool, TRUE);
+  gsm_state_machine_set_input_value (sm, "bool", &value_bool);
+
+  /* Back to the default value after the two transitions, that is
+   * INIT -> A -> B */
+  g_value_unset (&value);
+  gsm_state_machine_get_output_value (sm, "float", &value);
+  g_assert_cmpfloat (g_value_get_float (&value), ==, 0);
+  g_assert_cmpint (counter_output_updated, ==, 3);
+
+
+  g_value_set_boolean (&value_bool, FALSE);
+  gsm_state_machine_set_input_value (sm, "bool", &value_bool);
+
+  /* State A has the "float" input as output, which is currently 20 */
+  g_value_unset (&value);
+  gsm_state_machine_get_output_value (sm, "float", &value);
+  g_assert_cmpfloat (g_value_get_float (&value), ==, 20);
+  g_assert_cmpint (counter_output_updated, ==, 4);
+
+  /* Set input to 30 and see it change */
+  g_value_set_float (&value, 30);
+  gsm_state_machine_set_input_value (sm, "float", &value);
+  g_value_unset (&value);
+  gsm_state_machine_get_output_value (sm, "float", &value);
+  g_assert_cmpfloat (g_value_get_float (&value), ==, 30);
+  g_assert_cmpint (counter_output_updated, ==, 5);
+
+}
+
 int
 main (int argc, char **argv)
 {
@@ -226,6 +306,9 @@ main (int argc, char **argv)
 
   g_test_add_func ("/gsm-state-machine/orthogonal-transitions",
                    test_orthogonal_transitions);
+
+  g_test_add_func ("/gsm-state-machine/output",
+                   test_output);
 
   g_test_run ();
 }

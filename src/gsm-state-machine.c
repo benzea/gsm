@@ -750,6 +750,11 @@ gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint targe
   sm_state_new = g_hash_table_lookup (priv->states, GINT_TO_POINTER (target_state));
   g_assert (sm_state_new);
 
+  g_debug ("Doing transition from state \"%s\" to state \"%s\", intermediate: %d",
+           g_quark_to_string (sm_state_old->nick),
+           g_quark_to_string (sm_state_new->nick),
+           intermediate);
+
   priv->state = target_state;
   g_object_notify_by_pspec (G_OBJECT (state_machine), properties[PROP_STATE]);
 
@@ -771,6 +776,7 @@ gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint targe
       g_signal_emit (state_machine,
                      signals[SIGNAL_OUTPUT_CHANGED],
                      g_array_index (priv->outputs_quark, GQuark, i),
+                     g_quark_to_string (g_array_index (priv->outputs_quark, GQuark, i)),
                      new_value, TRUE, intermediate);
     }
 
@@ -798,8 +804,6 @@ gsm_state_machine_internal_get_next_state (GsmStateMachine *state_machine, gint 
 
       if (_conditions_is_subset (priv->active_conditions, transition->conditions))
         {
-          g_debug ("Doing state transition!");
-
           *new_state = transition->target_state;
           return TRUE;
         }
@@ -898,6 +902,7 @@ gsm_state_machine_add_output (GsmStateMachine  *state_machine,
   value = gsm_state_machine_value_new ();
   value->pspec = g_param_spec_ref_sink (pspec);
   value->idx   = g_hash_table_size (priv->outputs);
+  g_value_init (&value->value, G_PARAM_SPEC_VALUE_TYPE (pspec));
   g_value_copy (g_param_spec_get_default_value (pspec), &value->value);
 
   g_hash_table_insert (priv->outputs, (gpointer) pspec->name, value);
@@ -990,6 +995,7 @@ gsm_state_machine_set_input_value (GsmStateMachine  *state_machine,
       g_signal_emit (state_machine,
                      signals[SIGNAL_OUTPUT_CHANGED],
                      g_array_index (priv->outputs_quark, GQuark, i),
+                     g_quark_to_string (g_array_index (priv->outputs_quark, GQuark, i)),
                      &input_value->value, FALSE, FALSE);
     }
 
@@ -1021,6 +1027,7 @@ gsm_state_machine_get_output_value (GsmStateMachine  *state_machine,
 
   output_value = g_hash_table_lookup (priv->outputs, output);
 
+  g_value_init (out, G_VALUE_TYPE (&output_value->value));
   g_value_copy (sm_state->outputs->pdata[output_value->idx], out);
 }
 
@@ -1056,8 +1063,18 @@ gsm_state_machine_set_output_value (GsmStateMachine  *state_machine,
   new = g_new0 (GValue, 1);
   g_ptr_array_add (sm_state->owned_values, new);
 
+  g_value_init (new, G_PARAM_SPEC_VALUE_TYPE (output_value->pspec));
   g_value_copy (value, new);
   sm_state->outputs->pdata[output_value->idx] = new;
+
+  if (state == priv->state)
+    {
+      g_signal_emit (state_machine,
+                     signals[SIGNAL_OUTPUT_CHANGED],
+                     g_array_index (priv->outputs_quark, GQuark, output_value->idx),
+                     g_quark_to_string (g_array_index (priv->outputs_quark, GQuark, output_value->idx)),
+                     new, FALSE, FALSE);
+    }
 }
 
 

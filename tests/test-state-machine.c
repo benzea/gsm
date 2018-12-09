@@ -134,6 +134,8 @@ test_simple_machine (void)
   g_assert_cmpint (counter_state_enter_b, ==, 1);
   g_assert_cmpint (counter_state_exit_a, ==, 1);
   g_assert_cmpint (counter_state_exit_b, ==, 1);
+
+  gsm_state_machine_to_dot_file (sm, "simple-machine.dot");
 }
 
 static void
@@ -212,6 +214,8 @@ test_orthogonal_transitions (void)
                               "enum::init",
                               "!bool",
                               NULL);
+
+  gsm_state_machine_to_dot_file (sm, "orthogonal-transitions.dot");
 }
 
 
@@ -354,6 +358,8 @@ test_events (void)
   /* Then we automatically go back to A */
   g_main_context_iteration (ctx, FALSE);
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
+
+  gsm_state_machine_to_dot_file (sm, "event.dot");
 }
 
 int

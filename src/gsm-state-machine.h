@@ -141,5 +141,7 @@ void             gsm_state_machine_add_edge_strv       (GsmStateMachine  *state_
                                                         gint              target_state,
                                                         const GStrv       conditions);
 
+void             gsm_state_machine_to_dot_file         (GsmStateMachine  *state_machine,
+                                                        gchar            *filename);
 
 G_END_DECLS

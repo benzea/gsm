@@ -1467,3 +1467,63 @@ gsm_state_machine_add_edge_strv (GsmStateMachine  *state_machine,
   gsm_state_machine_state_add_transition (state_machine, sm_state, transition);
 }
 
+void
+gsm_state_machine_to_dot_file (GsmStateMachine  *state_machine,
+                               gchar            *filename)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  const gchar *path = g_getenv ("GSM_STATE_MACHINE_DOT_DIR");
+  g_autofree gchar *file = NULL;
+  g_autofree gchar *contents = NULL;
+  g_autoptr(GPtrArray) chunks = NULL;
+  GsmStateMachineState *state;
+  GHashTableIter iter;
+
+  if (!path)
+    return;
+
+  file = g_build_filename (path, filename, NULL);
+
+  chunks = g_ptr_array_new_with_free_func (g_free);
+
+  g_ptr_array_add (chunks, g_strdup_printf (
+"digraph finite_state_machine {\n"
+"  rankdir=LR;\n"
+"  size=\"8,5\"\n"
+"  node [shape = ellipse];\n"
+));
+
+  g_hash_table_iter_init (&iter, priv->states);
+  while (g_hash_table_iter_next (&iter, NULL, (gpointer*) &state))
+    {
+      for (guint i = 0; i < state->transitions->len; i++)
+        {
+          GsmStateMachineTransition *transition = g_ptr_array_index (state->transitions, i);
+          GsmStateMachineState *target = g_hash_table_lookup (priv->states, GINT_TO_POINTER (transition->target_state));
+          g_autoptr(GPtrArray) conditions = g_ptr_array_new ();
+          g_autofree gchar *label = NULL;
+
+          if (transition->event)
+            g_ptr_array_add (conditions, (gpointer) g_quark_to_string (transition->event));
+
+          for (guint j = 0; j < transition->conditions->len; j++)
+            g_ptr_array_add (conditions, (gpointer) g_quark_to_string (g_array_index (transition->conditions, GQuark, j)));
+
+          g_ptr_array_add (conditions, NULL);
+          label = g_strjoinv (" &\n", (GStrv) conditions->pdata);
+
+          g_ptr_array_add (chunks,
+                           g_strdup_printf ("  %s -> %s [ label = \"%s\",len=5,color=\"%s\" ];",
+                                            g_quark_to_string (state->nick),
+                                            g_quark_to_string (target->nick),
+                                            label,
+                                            transition->event ? "red" : "black"));
+        }
+    }
+
+  g_ptr_array_add (chunks, g_strdup ("}"));
+  g_ptr_array_add (chunks, NULL);
+
+  contents = g_strjoinv ("\n", (GStrv) chunks->pdata);
+  g_file_set_contents (file, contents, strlen (contents), NULL);
+}

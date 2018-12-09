@@ -18,6 +18,7 @@
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
 
+#include <gobject/gvaluecollector.h>
 #include "gsm-state-machine.h"
 
 typedef struct
@@ -159,7 +160,7 @@ gsm_state_machine_input_condition_destroy (GsmStateMachineCondition* condition)
   g_free (condition);
 }
 
-GsmStateMachineCondition*
+static GsmStateMachineCondition*
 gsm_state_machine_condition_from_quark (GsmStateMachine *state_machine,
                                         GQuark           condition)
 {
@@ -1156,12 +1157,36 @@ gsm_state_machine_get_output_value (GsmStateMachine  *state_machine,
   g_value_copy (sm_state->outputs->pdata[output_value->idx], out);
 }
 
-#if 0
-void             gsm_state_machine_set_output          (GsmStateMachine  *state_machine,
-                                                        gint              state,
-                                                        const gchar      *output,
-                                                        ...);
-#endif
+void
+gsm_state_machine_set_output (GsmStateMachine  *state_machine,
+                              gint              state,
+                              const gchar      *output,
+                              ...)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  GsmStateMachineValue *output_value;
+  g_autofree gchar *error = NULL;
+  GValue value;
+  va_list var_args;
+
+  output_value = g_hash_table_lookup (priv->outputs, output);
+  g_assert (output_value);
+
+  va_start (var_args, output);
+
+  G_VALUE_COLLECT_INIT (&value, output_value->pspec->value_type, var_args,
+                        0, &error);
+  if (error)
+    {
+      g_warning ("%s: %s", G_STRFUNC, error);
+      g_value_unset (&value);
+    }
+  else
+    {
+
+    }
+  va_end (var_args);
+}
 
 void
 gsm_state_machine_set_output_value (GsmStateMachine  *state_machine,
@@ -1205,7 +1230,7 @@ gsm_state_machine_set_output_value (GsmStateMachine  *state_machine,
 
 
 void
-gst_state_machine_create_condition (GsmStateMachine  *state_machine,
+gsm_state_machine_create_condition (GsmStateMachine  *state_machine,
                                     const gchar      *input,
                                     const GStrv       conditions,
                                     GsmStateMachineConditionFunc func)
@@ -1269,7 +1294,7 @@ _state_machine_enum_condition (GQuark condition, const GValue *value)
 }
 
 void
-gst_state_machine_create_default_condition (GsmStateMachine  *state_machine,
+gsm_state_machine_create_default_condition (GsmStateMachine  *state_machine,
                                             const gchar      *input)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
@@ -1284,7 +1309,7 @@ gst_state_machine_create_default_condition (GsmStateMachine  *state_machine,
       g_ptr_array_add (conditions, (gchar*) input);
       g_ptr_array_add (conditions, NULL);
 
-      gst_state_machine_create_condition (state_machine,
+      gsm_state_machine_create_condition (state_machine,
                                           input,
                                           (const GStrv) conditions->pdata,
                                           _state_machine_boolean_condition);
@@ -1304,7 +1329,7 @@ gst_state_machine_create_default_condition (GsmStateMachine  *state_machine,
 
       g_ptr_array_add (conditions, NULL);
 
-      gst_state_machine_create_condition (state_machine,
+      gsm_state_machine_create_condition (state_machine,
                                           input,
                                           (const GStrv) conditions->pdata,
                                           _state_machine_enum_condition);

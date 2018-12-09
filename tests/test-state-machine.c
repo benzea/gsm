@@ -54,7 +54,7 @@ test_simple_machine (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool-in", "BoolIn", "A test input boolean", FALSE, 0));
-  gst_state_machine_create_default_condition (sm, "bool-in");
+  gsm_state_machine_create_default_condition (sm, "bool-in");
 
   gsm_state_machine_add_edge (sm,
                               TEST_STATE_INIT,
@@ -146,7 +146,7 @@ test_groups (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool-in", "BoolIn", "A test input boolean", FALSE, 0));
-  gst_state_machine_create_default_condition (sm, "bool-in");
+  gsm_state_machine_create_default_condition (sm, "bool-in");
 
   gsm_state_machine_add_edge (sm,
                               GSM_STATES_ALL,
@@ -167,11 +167,11 @@ test_orthogonal_transitions (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool", "Bool1", "A test input boolean", FALSE, 0));
-  gst_state_machine_create_default_condition (sm, "bool");
+  gsm_state_machine_create_default_condition (sm, "bool");
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_enum ("enum", "Enum", "A test input enum", TEST_TYPE_STATE_MACHINE, 0, 0));
-  gst_state_machine_create_default_condition (sm, "enum");
+  gsm_state_machine_create_default_condition (sm, "enum");
 
   gsm_state_machine_add_edge (sm,
                               TEST_STATE_INIT,
@@ -228,7 +228,7 @@ test_output (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool", "Bool1", "A test input boolean", FALSE, 0));
-  gst_state_machine_create_default_condition (sm, "bool");
+  gsm_state_machine_create_default_condition (sm, "bool");
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_float ("float", "Float", "A float input", 0, 100, 0, 0));
@@ -312,7 +312,7 @@ test_events (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool", "Bool", "A test input boolean", FALSE, 0));
-  gst_state_machine_create_default_condition (sm, "bool");
+  gsm_state_machine_create_default_condition (sm, "bool");
 
   gsm_state_machine_add_event (sm, "event");
 

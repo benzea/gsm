@@ -107,24 +107,22 @@ void             gsm_state_machine_get_output_value    (GsmStateMachine  *state_
                                                         const gchar      *output,
                                                         GValue           *out);
 
-#if 0
 void             gsm_state_machine_set_output          (GsmStateMachine  *state_machine,
                                                         gint              state,
                                                         const gchar      *output,
                                                         ...);
-#endif
 void             gsm_state_machine_set_output_value    (GsmStateMachine  *state_machine,
                                                         gint              state,
                                                         const gchar      *output,
                                                         const GValue     *value);
 
 
-void             gst_state_machine_create_condition    (GsmStateMachine  *state_machine,
+void             gsm_state_machine_create_condition    (GsmStateMachine  *state_machine,
                                                         const gchar      *input,
                                                         const GStrv       conditions,
                                                         GsmStateMachineConditionFunc func);
 
-void             gst_state_machine_create_default_condition (GsmStateMachine  *state_machine,
+void             gsm_state_machine_create_default_condition (GsmStateMachine  *state_machine,
                                                              const gchar      *input);
 
 

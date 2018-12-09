@@ -26,9 +26,13 @@ typedef struct
 
   gint        state;
 
+  GArray     *events;
   GPtrArray  *input_conditions;
 
   GArray     *active_conditions;
+  GQuark      active_event;
+
+  GList      *pending_events;
 
   GPtrArray  *state_groups;
 
@@ -212,6 +216,7 @@ typedef struct
 {
   gint    target_state;
 
+  GQuark event;
   GArray *conditions;
 } GsmStateMachineTransition;
 
@@ -414,6 +419,22 @@ _machine_has_condition (GsmStateMachine *state_machine, GQuark condition)
   return FALSE;
 }
 
+static gboolean
+_machine_has_event (GsmStateMachine *state_machine, GQuark event)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+
+  for (guint i = 0; i < priv->events->len; i++)
+    {
+      GQuark known_event = g_array_index (priv->events, GQuark, i);
+
+      if (known_event == event)
+        return TRUE;
+    }
+
+  return FALSE;
+}
+
 static void
 gsm_state_machine_state_ensure_outputs (GsmStateMachineState *state, GHashTable *outputs)
 {
@@ -484,6 +505,10 @@ gsm_state_machine_state_add_transition (GsmStateMachine            *state_machin
     {
       GsmStateMachineTransition *item = g_ptr_array_index (state->transitions, i);
 
+      /* Everything is good if the events differ. */
+      if (transition->event != item->event)
+        continue;
+
       if (_conditions_is_disjunct (item->conditions, conditions_neg))
         {
           g_critical ("Transitions on state \"%s\" are not mutally exclusive", g_quark_to_string (state->nick));
@@ -527,6 +552,7 @@ gsm_state_machine_finalize (GObject *object)
   GsmStateMachine *self = (GsmStateMachine *)object;
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (self);
 
+  g_clear_pointer (&priv->events, g_array_unref);
   g_clear_pointer (&priv->inputs, g_hash_table_unref);
   g_clear_pointer (&priv->outputs, g_hash_table_unref);
 
@@ -699,6 +725,7 @@ gsm_state_machine_init (GsmStateMachine *self)
 
   priv->input_conditions = g_ptr_array_new_with_free_func ((GDestroyNotify) gsm_state_machine_input_condition_destroy);
 
+  priv->events = g_array_new (FALSE, TRUE, sizeof (GQuark));
   priv->inputs = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, (GDestroyNotify) gsm_state_machine_value_destroy);
   priv->outputs = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, (GDestroyNotify) gsm_state_machine_value_destroy);
 
@@ -799,8 +826,6 @@ gsm_state_machine_internal_get_next_state (GsmStateMachine *state_machine, gint 
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
   GsmStateMachineState *sm_state = NULL;
 
-  /* XXX: Will possibly need to update the conditionals here if events are implmeneted! */
-
   sm_state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (start_state));
   g_assert (sm_state);
 
@@ -808,6 +833,10 @@ gsm_state_machine_internal_get_next_state (GsmStateMachine *state_machine, gint 
     {
       GsmStateMachineTransition *transition;
       transition = g_ptr_array_index (sm_state->transitions, i);
+
+      /* Do not consider edge if the event does not match. */
+      if (transition->event != priv->active_event)
+        continue;
 
       if (_conditions_is_subset (priv->active_conditions, transition->conditions))
         {
@@ -830,7 +859,20 @@ gsm_state_machine_internal_update (GsmStateMachine *state_machine)
 
   transitioned = gsm_state_machine_internal_get_next_state (state_machine, priv->state, &next_state);
   if (!transitioned)
-    return;
+    {
+      /* The state machine is currently stable, we can execute an event if one is pending */
+      if (!priv->pending_events)
+        return;
+
+      priv->active_event = GPOINTER_TO_INT (priv->pending_events->data);
+      priv->pending_events = g_list_delete_link (priv->pending_events, priv->pending_events);
+
+      /* Re-check if the event caused a transition. */
+      transitioned = gsm_state_machine_internal_get_next_state (state_machine, priv->state, &next_state);
+      priv->active_event = 0;
+      if (!transitioned)
+        return;
+    }
 
   gsm_state_machine_internal_set_state (state_machine, next_state);
 }
@@ -874,6 +916,39 @@ gsm_state_machine_get_state_type (GsmStateMachine  *state_machine)
   return priv->state_type;
 }
 
+void
+gsm_state_machine_add_event (GsmStateMachine  *state_machine,
+                             const gchar      *event)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  GQuark event_quark = g_quark_from_string (event);
+
+  if (_machine_has_condition (state_machine, event_quark) || _machine_has_event (state_machine, event_quark))
+    {
+      g_critical ("A condition or event with the name %s already exists", event);
+      return;
+    }
+
+  g_array_append_val (priv->events, event_quark);
+}
+
+void
+gsm_state_machine_queue_event (GsmStateMachine  *state_machine,
+                               const gchar      *event)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  GQuark event_quark = g_quark_try_string (event);
+
+  if (!event_quark || !_machine_has_event (state_machine, event_quark))
+    {
+      g_critical ("The event %s has not been registered\n", event);
+      return;
+    }
+
+  priv->pending_events = g_list_append (priv->pending_events, GINT_TO_POINTER (event_quark));
+
+  gsm_state_machine_internal_queue_update (state_machine);
+}
 
 void
 gsm_state_machine_add_input (GsmStateMachine  *state_machine,
@@ -1276,9 +1351,23 @@ gsm_state_machine_add_edge_strv (GsmStateMachine  *state_machine,
       GQuark condition = g_quark_from_string (conditions[i]);
 
       if (!_machine_has_condition (state_machine, condition))
-        g_critical ("Condition %s is invalid for the state machine, defined edge will never execute",
-                    g_quark_to_string (condition));
-      g_array_append_val (transition->conditions, condition);
+        {
+          if (!_machine_has_event (state_machine, condition))
+            {
+              g_critical ("Neither condition nor event \"%s\" is known for the state machine, defined edge will never execute",
+                          g_quark_to_string (condition));
+            }
+          else
+            {
+              if (transition->event)
+                g_critical ("Tried to add second event %s, will keep using %s",
+                            g_quark_to_string (condition), g_quark_to_string (transition->event));
+              else
+                transition->event = condition;
+            }
+        }
+      else
+        g_array_append_val (transition->conditions, condition);
     }
 
   g_array_sort (transition->conditions, _condition_cmp);

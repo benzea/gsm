@@ -26,9 +26,6 @@ typedef struct
 
   gint        state;
 
-  gboolean    internal_update;
-  gboolean    set_state_recursed;
-
   GPtrArray  *input_conditions;
 
   GArray     *active_conditions;
@@ -40,10 +37,15 @@ typedef struct
   GArray     *outputs_quark;
 
   GHashTable *states;
+
+  guint       idle_source_id;
 } GsmStateMachinePrivate;
 
 G_DEFINE_TYPE_WITH_PRIVATE (GsmStateMachine, gsm_state_machine, G_TYPE_OBJECT)
 #define GSM_STATE_MACHINE_PRIVATE(obj) gsm_state_machine_get_instance_private (obj)
+
+static void gsm_state_machine_internal_queue_update (GsmStateMachine *state_machine);
+
 
 enum {
   PROP_0,
@@ -536,6 +538,9 @@ gsm_state_machine_finalize (GObject *object)
 
   g_clear_pointer (&priv->state_groups, g_ptr_array_unref);
 
+  if (priv->idle_source_id)
+    g_source_remove (priv->idle_source_id);
+
   G_OBJECT_CLASS (gsm_state_machine_parent_class)->finalize (object);
 }
 
@@ -731,7 +736,7 @@ gsm_state_machine_internal_update_conditionals (GsmStateMachine *state_machine)
 }
 
 static void
-gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint target_state, gboolean intermediate)
+gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint target_state)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
   gint old_state;
@@ -745,15 +750,14 @@ gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint targe
   g_signal_emit (state_machine,
                  signals[SIGNAL_STATE_EXIT],
                  sm_state_old->nick,
-                 old_state, target_state, intermediate);
+                 old_state, target_state);
 
   sm_state_new = g_hash_table_lookup (priv->states, GINT_TO_POINTER (target_state));
   g_assert (sm_state_new);
 
-  g_debug ("Doing transition from state \"%s\" to state \"%s\", intermediate: %d",
+  g_debug ("Doing transition from state \"%s\" to state \"%s\"",
            g_quark_to_string (sm_state_old->nick),
-           g_quark_to_string (sm_state_new->nick),
-           intermediate);
+           g_quark_to_string (sm_state_new->nick));
 
   priv->state = target_state;
   g_object_notify_by_pspec (G_OBJECT (state_machine), properties[PROP_STATE]);
@@ -777,13 +781,16 @@ gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint targe
                      signals[SIGNAL_OUTPUT_CHANGED],
                      g_array_index (priv->outputs_quark, GQuark, i),
                      g_quark_to_string (g_array_index (priv->outputs_quark, GQuark, i)),
-                     new_value, TRUE, intermediate);
+                     new_value, TRUE);
     }
 
   g_signal_emit (state_machine,
                  signals[SIGNAL_STATE_ENTER],
                  sm_state_new->nick,
-                 target_state, old_state, intermediate);
+                 target_state, old_state);
+
+  /* We may need further updates */
+  gsm_state_machine_internal_queue_update (state_machine);
 }
 
 static gboolean
@@ -816,16 +823,8 @@ static void
 gsm_state_machine_internal_update (GsmStateMachine *state_machine)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
-  gint starting_state = priv->state;
   gint next_state;
-  gint lookahead_state;
-  gboolean transitioned, intermediate;
-
-  if (priv->internal_update)
-    {
-      priv->set_state_recursed = TRUE;
-      return;
-    }
+  gboolean transitioned;
 
   gsm_state_machine_internal_update_conditionals (state_machine);
 
@@ -833,25 +832,30 @@ gsm_state_machine_internal_update (GsmStateMachine *state_machine)
   if (!transitioned)
     return;
 
-  priv->internal_update = TRUE;
+  gsm_state_machine_internal_set_state (state_machine, next_state);
+}
 
-  do
-    {
-      /* XXX: Events will need to update the conditionals from here somehow. */
-      intermediate = gsm_state_machine_internal_get_next_state (state_machine, next_state, &lookahead_state);
+static gboolean
+gsm_state_machine_internal_idle_update (gpointer user_data)
+{
+  GsmStateMachine *state_machine = GSM_STATE_MACHINE (user_data);
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
 
-      priv->set_state_recursed = FALSE;
-      gsm_state_machine_internal_set_state (state_machine, next_state, intermediate);
+  priv->idle_source_id = 0;
 
-      transitioned = intermediate;
-      next_state = lookahead_state;
-    }
-  while (transitioned && next_state != starting_state);
+  gsm_state_machine_internal_update (state_machine);
 
-  if (transitioned)
-    g_warning ("Aborting state machine update as we should leave the initial state a second time.");
+  return G_SOURCE_REMOVE;
+}
 
-  priv->internal_update = FALSE;
+static void
+gsm_state_machine_internal_queue_update (GsmStateMachine *state_machine)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+
+  if (priv->idle_source_id)
+    return;
+  priv->idle_source_id = g_idle_add (gsm_state_machine_internal_idle_update, state_machine);
 }
 
 gint
@@ -999,7 +1003,7 @@ gsm_state_machine_set_input_value (GsmStateMachine  *state_machine,
                      &input_value->value, FALSE, FALSE);
     }
 
-  gsm_state_machine_internal_update (state_machine);
+  gsm_state_machine_internal_queue_update (state_machine);
 }
 
 

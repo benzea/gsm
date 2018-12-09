@@ -55,6 +55,10 @@ GsmStateMachine *gsm_state_machine_new                 (GType state_type);
 gint             gsm_state_machine_get_state           (GsmStateMachine  *state_machine);
 GType            gsm_state_machine_get_state_type      (GsmStateMachine  *state_machine);
 
+#if 0
+void             gsm_state_machine_add_event           (GsmStateMachine  *state_machine,
+                                                        const gchar      *event);
+#endif
 
 void             gsm_state_machine_add_input           (GsmStateMachine  *state_machine,
                                                         GParamSpec       *pspec);

@@ -42,6 +42,7 @@ count_signal (gint *counter)
 static void
 test_simple_machine (void)
 {
+  GMainContext *ctx = g_main_context_default ();
   g_autoptr(GsmStateMachine) sm = NULL;
   g_auto(GValue) value = G_VALUE_INIT;
   gint counter_state_enter_a = 0;
@@ -83,6 +84,7 @@ test_simple_machine (void)
   g_value_init (&value, G_TYPE_BOOLEAN);
   g_value_set_boolean (&value, FALSE);
   gsm_state_machine_set_input_value (sm, "bool-in", &value);
+  while (g_main_context_iteration (ctx, FALSE)) {}
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
   g_assert_cmpint (counter_state_enter_a, ==, 1);
   g_assert_cmpint (counter_state_enter_b, ==, 0);
@@ -90,6 +92,7 @@ test_simple_machine (void)
   g_assert_cmpint (counter_state_exit_b, ==, 0);
 
   gsm_state_machine_set_input_value (sm, "bool-in", &value);
+  while (g_main_context_iteration (ctx, FALSE)) {}
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
   g_assert_cmpint (counter_state_enter_a, ==, 1);
   g_assert_cmpint (counter_state_enter_b, ==, 0);
@@ -99,6 +102,7 @@ test_simple_machine (void)
 
   g_value_set_boolean (&value, TRUE);
   gsm_state_machine_set_input_value (sm, "bool-in", &value);
+  while (g_main_context_iteration (ctx, FALSE)) {}
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_B);
   g_assert_cmpint (counter_state_enter_a, ==, 1);
   g_assert_cmpint (counter_state_enter_b, ==, 1);
@@ -106,6 +110,7 @@ test_simple_machine (void)
   g_assert_cmpint (counter_state_exit_b, ==, 0);
 
   gsm_state_machine_set_input_value (sm, "bool-in", &value);
+  while (g_main_context_iteration (ctx, FALSE)) {}
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_B);
   g_assert_cmpint (counter_state_enter_a, ==, 1);
   g_assert_cmpint (counter_state_enter_b, ==, 1);
@@ -115,6 +120,7 @@ test_simple_machine (void)
 
   g_value_set_boolean (&value, FALSE);
   gsm_state_machine_set_input_value (sm, "bool-in", &value);
+  while (g_main_context_iteration (ctx, FALSE)) {}
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
   g_assert_cmpint (counter_state_enter_a, ==, 2);
   g_assert_cmpint (counter_state_enter_b, ==, 1);
@@ -132,6 +138,7 @@ test_simple_machine (void)
 static void
 test_groups (void)
 {
+  GMainContext *ctx = g_main_context_default ();
   g_autoptr(GsmStateMachine) sm = NULL;
   g_auto(GValue) value = G_VALUE_INIT;
 
@@ -150,6 +157,7 @@ test_groups (void)
   g_value_init (&value, G_TYPE_BOOLEAN);
   g_value_set_boolean (&value, TRUE);
   gsm_state_machine_set_input_value (sm, "bool-in", &value);
+  while (g_main_context_iteration (ctx, FALSE)) {}
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
 }
 
@@ -213,6 +221,7 @@ test_orthogonal_transitions (void)
 static void
 test_output (void)
 {
+  GMainContext *ctx = g_main_context_default ();
   g_autoptr(GsmStateMachine) sm = NULL;
   g_auto(GValue) value = G_VALUE_INIT;
   g_auto(GValue) value_bool = G_VALUE_INIT;
@@ -262,6 +271,7 @@ test_output (void)
   g_value_init (&value_bool, G_TYPE_BOOLEAN);
   g_value_set_boolean (&value_bool, TRUE);
   gsm_state_machine_set_input_value (sm, "bool", &value_bool);
+  while (g_main_context_iteration (ctx, FALSE)) {}
 
   /* Back to the default value after the two transitions, that is
    * INIT -> A -> B */
@@ -273,6 +283,7 @@ test_output (void)
 
   g_value_set_boolean (&value_bool, FALSE);
   gsm_state_machine_set_input_value (sm, "bool", &value_bool);
+  while (g_main_context_iteration (ctx, FALSE)) {}
 
   /* State A has the "float" input as output, which is currently 20 */
   g_value_unset (&value);
@@ -283,6 +294,7 @@ test_output (void)
   /* Set input to 30 and see it change */
   g_value_set_float (&value, 30);
   gsm_state_machine_set_input_value (sm, "float", &value);
+  while (g_main_context_iteration (ctx, FALSE)) {}
   g_value_unset (&value);
   gsm_state_machine_get_output_value (sm, "float", &value);
   g_assert_cmpfloat (g_value_get_float (&value), ==, 30);

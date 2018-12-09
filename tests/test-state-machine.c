@@ -129,6 +129,30 @@ test_simple_machine (void)
   g_assert_cmpint (counter_state_exit_b, ==, 1);
 }
 
+static void
+test_groups (void)
+{
+  g_autoptr(GsmStateMachine) sm = NULL;
+  g_auto(GValue) value = G_VALUE_INIT;
+
+  sm = gsm_state_machine_new (TEST_TYPE_STATE_MACHINE);
+
+  gsm_state_machine_add_input (sm,
+                               g_param_spec_boolean ("bool-in", "BoolIn", "A test input boolean", FALSE, 0));
+  gst_state_machine_create_default_condition (sm, "bool-in");
+
+  gsm_state_machine_add_edge (sm,
+                              GSM_STATES_ALL,
+                              TEST_STATE_A,
+                              NULL);
+
+  /* XXX: Just so the machine updates */
+  g_value_init (&value, G_TYPE_BOOLEAN);
+  g_value_set_boolean (&value, TRUE);
+  gsm_state_machine_set_input_value (sm, "bool-in", &value);
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -139,6 +163,9 @@ main (int argc, char **argv)
 
   g_test_add_func ("/gsm-state-machine/simple-machine",
                    test_simple_machine);
+
+  g_test_add_func ("/gsm-state-machine/groups",
+                   test_groups);
 
   g_test_run ();
 }

@@ -48,6 +48,8 @@ struct _GsmStateMachineClass
   void (*output_changed) (const gchar *name, GValue value, gboolean state_change, gboolean intermediate);
 };
 
+#define GSM_STATES_ALL (-1)
+
 GsmStateMachine *gsm_state_machine_new                 (GType state_type);
 
 gint             gsm_state_machine_get_state           (GsmStateMachine  *state_machine);

@@ -1,0 +1,97 @@
+/* gsm-version.h.in
+ *
+ * Copyright 2018 Benjamin Berg
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#ifndef GSM_VERSION_H
+#define GSM_VERSION_H
+
+#if !defined(GSM_INSIDE) && !defined(GSM_COMPILATION)
+# error "Only <gsm.h> can be included directly."
+#endif
+
+/**
+ * SECTION:gsmversion
+ * @short_description: gsm version checking
+ *
+ * gsm provides macros to check the version of the library
+ * at compile-time
+ */
+
+/**
+ * GSM_MAJOR_VERSION:
+ *
+ * gsm major version component (e.g. 1 if %GSM_VERSION is 1.2.3)
+ */
+#define GSM_MAJOR_VERSION (@MAJOR_VERSION@)
+
+/**
+ * GSM_MINOR_VERSION:
+ *
+ * gsm minor version component (e.g. 2 if %GSM_VERSION is 1.2.3)
+ */
+#define GSM_MINOR_VERSION (@MINOR_VERSION@)
+
+/**
+ * GSM_MICRO_VERSION:
+ *
+ * gsm micro version component (e.g. 3 if %GSM_VERSION is 1.2.3)
+ */
+#define GSM_MICRO_VERSION (@MICRO_VERSION@)
+
+/**
+ * GSM_VERSION
+ *
+ * gsm version.
+ */
+#define GSM_VERSION (@VERSION@)
+
+/**
+ * GSM_VERSION_S:
+ *
+ * gsm version, encoded as a string, useful for printing and
+ * concatenation.
+ */
+#define GSM_VERSION_S "@VERSION@"
+
+#define GSM_ENCODE_VERSION(major,minor,micro) \
+        ((major) << 24 | (minor) << 16 | (micro) << 8)
+
+/**
+ * GSM_VERSION_HEX:
+ *
+ * gsm version, encoded as an hexadecimal number, useful for
+ * integer comparisons.
+ */
+#define GSM_VERSION_HEX \
+        (GSM_ENCODE_VERSION (GSM_MAJOR_VERSION, GSM_MINOR_VERSION, GSM_MICRO_VERSION))
+
+/**
+ * GSM_CHECK_VERSION:
+ * @major: required major version
+ * @minor: required minor version
+ * @micro: required micro version
+ *
+ * Compile-time version checking. Evaluates to %TRUE if the version
+ * of gsm is greater than the required one.
+ */
+#define GSM_CHECK_VERSION(major,minor,micro)   \
+        (GSM_MAJOR_VERSION > (major) || \
+         (GSM_MAJOR_VERSION == (major) && GSM_MINOR_VERSION > (minor)) || \
+         (GSM_MAJOR_VERSION == (major) && GSM_MINOR_VERSION == (minor) && \
+          GSM_MICRO_VERSION >= (micro)))
+
+#endif /* GSM_VERSION_H */

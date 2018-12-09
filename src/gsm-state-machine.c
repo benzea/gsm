@@ -151,6 +151,36 @@ gsm_state_machine_input_condition_destroy (GsmStateMachineCondition* condition)
   g_free (condition);
 }
 
+GsmStateMachineCondition*
+gsm_state_machine_condition_from_quark (GsmStateMachine *state_machine,
+                                        GQuark           condition)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  g_autofree gchar *str_free;
+  gchar *str;
+  gchar *separator;
+  GQuark input;
+
+  str = str_free = g_strdup (g_quark_to_string (condition));
+  if (str[0] == '!')
+    str++;
+
+  separator = strchr(str, ':');
+  if (separator)
+    *separator = '\0';
+
+  input = g_quark_try_string (str);
+
+  for (gint i = 0; i < priv->input_conditions->len; i++)
+    {
+      GsmStateMachineCondition *cond;
+      cond = g_ptr_array_index (priv->input_conditions, i);
+      if (cond->input == input)
+        return cond;
+    }
+
+  return NULL;
+}
 
 /* A value in the inputs/outputs dictionaries */
 typedef struct
@@ -241,6 +271,147 @@ typedef struct
 
 } GsmStateMachineState;
 
+
+static gint
+_condition_cmp (gconstpointer a, gconstpointer b)
+{
+  const GQuark *qa, *qb;
+
+  qa = a;
+  qb = b;
+
+  if (*qa < *qb)
+    return -1;
+  if (*qa > *qb)
+    return 1;
+
+  return 0;
+}
+
+/* XXX: If we had something ourself that isn't quite a GQuark,
+ *      then this could be much faster (e.g. by toggling the MSB). */
+static GQuark
+_condition_negate (GQuark cond)
+{
+  const gchar *str = g_quark_to_string (cond);
+
+  if (str[0] == '!')
+    return g_quark_from_string (str + 1);
+  else
+    {
+      g_autofree gchar *new = NULL;
+
+      new = g_strconcat ("!", str, NULL);
+
+      return g_quark_from_string (new);
+    }
+}
+
+static void
+_condition_expand (GQuark active, GsmStateMachineCondition *condition, GArray *target)
+{
+  gboolean found = FALSE;
+  gboolean negated = FALSE;
+
+  /* Active may be 0 if this is a boolean (i.e. only one value), in which case it means
+   * a negated input */
+  if (active == 0)
+    g_assert (condition->conditions->len == 1);
+
+  if (active && g_quark_to_string (active)[0] == '!')
+    {
+      negated = TRUE;
+      active = _condition_negate (active);
+    }
+
+  for (guint j = 0; j < condition->conditions->len; j++)
+    {
+      if (g_array_index (condition->conditions, GQuark, j) == active)
+        {
+          g_assert (found == FALSE);
+          found = TRUE;
+          if (negated)
+            g_array_append_val (target, g_array_index (condition->conditions_neg, GQuark, j));
+          else
+            g_array_append_val (target, g_array_index (condition->conditions, GQuark, j));
+        }
+      else
+        {
+          if (negated)
+            g_array_append_val (target, g_array_index (condition->conditions, GQuark, j));
+          else
+            g_array_append_val (target, g_array_index (condition->conditions_neg, GQuark, j));
+        }
+    }
+
+  g_assert (active == 0 || found == TRUE);
+}
+
+static gboolean
+_conditions_is_subset (GArray *set, GArray *conditions)
+{
+  gint i, j;
+  /* Assume both sets are sorted, i.e. we only need to check that each
+   * element in conditions is included in set. */
+
+  for (i = 0, j = 0; i < conditions->len; i++)
+    {
+      GQuark condition = g_array_index (conditions, GQuark, i);
+
+      while ((j < set->len) && (g_array_index (set, GQuark, j) < condition))
+        j++;
+
+      if (condition != g_array_index (set, GQuark, j))
+        return FALSE;
+    }
+
+  return TRUE;
+}
+
+static gboolean
+_conditions_is_disjunct (GArray *set, GArray *conditions)
+{
+  gint i, j;
+  /* Assume both sets are sorted, i.e. we only need to check that each
+   * element in conditions is included in set. */
+
+  for (i = 0, j = 0; i < conditions->len; i++)
+    {
+      GQuark condition = g_array_index (conditions, GQuark, i);
+
+      while ((j < set->len) && (g_array_index (set, GQuark, j) < condition))
+        j++;
+
+      if (condition == g_array_index (set, GQuark, j))
+        return FALSE;
+    }
+
+  return TRUE;
+}
+
+static gboolean
+_machine_has_condition (GsmStateMachine *state_machine, GQuark condition)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  GsmStateMachineCondition *input_cond;
+
+  for (guint i = 0; i < priv->input_conditions->len; i++)
+    {
+      input_cond = g_ptr_array_index (priv->input_conditions, i);
+
+      for (guint j = 0; j < input_cond->conditions->len; j++)
+        {
+          if (condition == g_array_index (input_cond->conditions, GQuark, j))
+            return TRUE;
+
+          if (condition == g_array_index (input_cond->conditions_neg, GQuark, j))
+            return TRUE;
+        }
+    }
+
+  return FALSE;
+}
+
 static void
 gsm_state_machine_state_ensure_outputs (GsmStateMachineState *state, GHashTable *outputs)
 {
@@ -289,9 +460,36 @@ gsm_state_machine_state_new (GQuark nick)
 }
 
 static void
-gsm_state_machine_state_add_transition (GsmStateMachineState       *state,
+gsm_state_machine_state_add_transition (GsmStateMachine            *state_machine,
+                                        GsmStateMachineState       *state,
                                         GsmStateMachineTransition  *transition)
 {
+  g_autoptr(GArray) conditions_neg = NULL;
+
+  conditions_neg = g_array_new (FALSE, FALSE, sizeof(GQuark));
+
+  /* XXX: This is relatively slow unfortunately; but also executed seldomly! */
+  for (guint i = 0; i < transition->conditions->len; i++)
+    {
+      GQuark negated = _condition_negate (g_array_index (transition->conditions, GQuark, i));
+      GsmStateMachineCondition *condition = gsm_state_machine_condition_from_quark (state_machine, negated);
+
+      _condition_expand (negated, condition, conditions_neg);
+    }
+  g_array_sort (conditions_neg, _condition_cmp);
+
+  for (guint i = 0; i < state->transitions->len; i++)
+    {
+      GsmStateMachineTransition *item = g_ptr_array_index (state->transitions, i);
+
+      if (_conditions_is_disjunct (item->conditions, conditions_neg))
+        {
+          g_critical ("Transitions on state \"%s\" are not mutally exclusive", g_quark_to_string (state->nick));
+          gsm_state_machine_transition_destroy (transition);
+          return;
+        }
+    }
+
   g_ptr_array_add (state->transitions, transition);
 }
 
@@ -303,73 +501,6 @@ gsm_state_machine_state_destroy (GsmStateMachineState *state)
   g_clear_pointer (&state->transitions, g_ptr_array_unref);
 
   g_free (state);
-}
-
-static gint
-_condition_cmp (gconstpointer a, gconstpointer b)
-{
-  const GQuark *qa, *qb;
-
-  qa = a;
-  qb = b;
-
-  if (*qa < *qb)
-    return -1;
-  if (*qa > *qb)
-    return 1;
-
-  return 0;
-}
-
-static gboolean
-_conditions_is_subset (GArray *set, GArray *conditions)
-{
-  gint i, j;
-  /* Assume both sets are sorted, i.e. we only need to check that each
-   * element in conditions is included in set. */
-
-  g_debug ("Testing subset");
-
-  for (i = 0, j = 0; i < conditions->len; i++)
-    {
-      GQuark condition = g_array_index (conditions, GQuark, i);
-
-      g_debug ("checking %s", g_quark_to_string (condition));
-
-      while ((j < set->len) && (g_array_index (set, GQuark, j) < condition))
-        j++;
-
-      g_debug ("checking against %s", g_quark_to_string (g_array_index (set, GQuark, j)));
-
-      if (condition != g_array_index (set, GQuark, j))
-        return FALSE;
-    }
-
-  g_debug ("is subset");
-  return TRUE;
-}
-
-static gboolean
-_machine_has_condition (GsmStateMachine *state_machine, GQuark condition)
-{
-  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
-  GsmStateMachineCondition *input_cond;
-
-  for (guint i = 0; i < priv->input_conditions->len; i++)
-    {
-      input_cond = g_ptr_array_index (priv->input_conditions, i);
-
-      for (guint j = 0; j < input_cond->conditions->len; j++)
-        {
-          if (condition == g_array_index (input_cond->conditions, GQuark, j))
-            return TRUE;
-
-          if (condition == g_array_index (input_cond->conditions_neg, GQuark, j))
-            return TRUE;
-        }
-    }
-
-  return FALSE;
 }
 
 /**
@@ -587,33 +718,13 @@ gsm_state_machine_internal_update_conditionals (GsmStateMachine *state_machine)
       GsmStateMachineCondition *condition;
       GValue value = G_VALUE_INIT;
       GQuark active;
-      gboolean found = FALSE;
 
       condition = g_ptr_array_index (priv->input_conditions, i);
 
       gsm_state_machine_get_input_value (state_machine, g_quark_to_string (condition->input), &value);
       active = condition->getter (condition->input, &value);
 
-      /* Active may be 0 if this is a boolean (i.e. only one value), in which case it means
-       * a negated input */
-      if (active == 0)
-        g_assert (condition->conditions->len == 1);
-
-      for (guint j = 0; j < condition->conditions->len; j++)
-        {
-          if (g_array_index (condition->conditions, GQuark, j) == active)
-            {
-              g_assert (found == FALSE);
-              found = TRUE;
-              g_array_append_val (priv->active_conditions, g_array_index (condition->conditions, GQuark, j));
-            }
-          else
-            {
-              g_array_append_val (priv->active_conditions, g_array_index (condition->conditions_neg, GQuark, j));
-            }
-        }
-
-      g_assert (active == 0 || found);
+      _condition_expand (active, condition, priv->active_conditions);
     }
 
   g_array_sort (priv->active_conditions, _condition_cmp);
@@ -1025,7 +1136,7 @@ gst_state_machine_create_default_condition (GsmStateMachine  *state_machine,
 
   input_value = g_hash_table_lookup (priv->inputs, input);
 
-  if (g_value_type_compatible (G_PARAM_SPEC_VALUE_TYPE (input_value->pspec), G_TYPE_BOOLEAN))
+  if (g_type_is_a (G_PARAM_SPEC_VALUE_TYPE (input_value->pspec), G_TYPE_BOOLEAN))
     {
       conditions = g_ptr_array_new ();
       g_ptr_array_add (conditions, (gchar*) input);
@@ -1036,17 +1147,16 @@ gst_state_machine_create_default_condition (GsmStateMachine  *state_machine,
                                           (const GStrv) conditions->pdata,
                                           _state_machine_boolean_condition);
     }
-  else if (g_value_type_compatible (G_PARAM_SPEC_VALUE_TYPE (input_value->pspec), G_TYPE_ENUM))
+  else if (g_type_is_a (G_PARAM_SPEC_VALUE_TYPE (input_value->pspec), G_TYPE_ENUM))
     {
       GEnumClass *enum_class = G_ENUM_CLASS (g_type_class_peek (G_PARAM_SPEC_VALUE_TYPE (input_value->pspec)));
       guint i;
 
-      conditions = g_ptr_array_new ();
+      conditions = g_ptr_array_new_with_free_func (g_free);
 
       for (i = 0; i < enum_class->n_values; i++)
         {
-          g_autofree gchar *condition = NULL;
-          condition = g_strconcat (input, "::", enum_class->values[i].value_nick, NULL);
+          gchar *condition = g_strconcat (input, "::", enum_class->values[i].value_nick, NULL);
           g_ptr_array_add (conditions, (gchar*) condition);
         }
 
@@ -1144,28 +1254,35 @@ gsm_state_machine_add_edge_strv (GsmStateMachine  *state_machine,
     {
       GQuark condition = g_quark_from_string (conditions[i]);
 
-      g_assert (_machine_has_condition (state_machine, condition));
+      if (!_machine_has_condition (state_machine, condition))
+        g_critical ("Condition %s is invalid for the state machine, defined edge will never execute",
+                    g_quark_to_string (condition));
       g_array_append_val (transition->conditions, condition);
     }
 
   g_array_sort (transition->conditions, _condition_cmp);
 
-  gsm_state_machine_state_add_transition (sm_state, transition);
-
-  /* Copy transition into all start states */
+  /* Copy transition into all possible start states */
   if (start_group)
     {
       for (gint i = 0; i < start_group->num_states; i++)
         {
-          /* Do not add a route to itself. */
+          GsmStateMachineState *group_state;
+
+          /* Already handled the groups default state */
+          if (start_group->states[i] == start_state)
+            continue;
+
+          /* Do not add a route to the target state. */
           if (start_group->states[i] == target_state)
             continue;
 
-          sm_state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (start_group->states[i]));
-          g_assert (sm_state);
-          /* TODO: Maybe transitions should be refcounted instead? */
-          gsm_state_machine_state_add_transition (sm_state, gsm_state_machine_transition_copy (transition));
+          group_state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (start_group->states[i]));
+          g_assert (group_state);
+          gsm_state_machine_state_add_transition (state_machine, group_state, gsm_state_machine_transition_copy (transition));
         }
     }
+
+  gsm_state_machine_state_add_transition (state_machine, sm_state, transition);
 }
 

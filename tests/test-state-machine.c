@@ -153,6 +153,63 @@ test_groups (void)
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
 }
 
+static void
+test_orthogonal_transitions (void)
+{
+  g_autoptr(GsmStateMachine) sm = NULL;
+  g_auto(GValue) value = G_VALUE_INIT;
+
+  sm = gsm_state_machine_new (TEST_TYPE_STATE_MACHINE);
+
+  gsm_state_machine_add_input (sm,
+                               g_param_spec_boolean ("bool", "Bool1", "A test input boolean", FALSE, 0));
+  gst_state_machine_create_default_condition (sm, "bool");
+
+  gsm_state_machine_add_input (sm,
+                               g_param_spec_enum ("enum", "Enum", "A test input enum", TEST_TYPE_STATE_MACHINE, 0, 0));
+  gst_state_machine_create_default_condition (sm, "enum");
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT,
+                              TEST_STATE_A,
+                              "bool",
+                              NULL);
+
+  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*not mutally exclusive*");
+  /* Not possible to add as a "bool" transition already exists */
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT,
+                              TEST_STATE_A,
+                              "enum::a",
+                              NULL);
+  g_test_assert_expected_messages ();
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT,
+                              TEST_STATE_A,
+                              "enum::b",
+                              "!bool",
+                              NULL);
+
+  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*not mutally exclusive*");
+  /* Not possible, overlaps with previous */
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT,
+                              TEST_STATE_A,
+                              "!enum::a",
+                              "!bool",
+                              NULL);
+  g_test_assert_expected_messages ();
+
+  /* Possible, no overlap with "enum::b" */
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT,
+                              TEST_STATE_A,
+                              "enum::init",
+                              "!bool",
+                              NULL);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -166,6 +223,9 @@ main (int argc, char **argv)
 
   g_test_add_func ("/gsm-state-machine/groups",
                    test_groups);
+
+  g_test_add_func ("/gsm-state-machine/orthogonal-transitions",
+                   test_orthogonal_transitions);
 
   g_test_run ();
 }

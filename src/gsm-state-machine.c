@@ -361,7 +361,7 @@ _conditions_is_subset (GArray *set, GArray *conditions)
       while ((j < set->len) && (g_array_index (set, GQuark, j) < condition))
         j++;
 
-      if (condition != g_array_index (set, GQuark, j))
+      if (j > set->len || condition != g_array_index (set, GQuark, j))
         return FALSE;
     }
 
@@ -382,7 +382,7 @@ _conditions_is_disjunct (GArray *set, GArray *conditions)
       while ((j < set->len) && (g_array_index (set, GQuark, j) < condition))
         j++;
 
-      if (condition == g_array_index (set, GQuark, j))
+      if ((j < set->len) && (condition == g_array_index (set, GQuark, j)))
         return FALSE;
     }
 

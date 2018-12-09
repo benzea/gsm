@@ -42,6 +42,7 @@ typedef struct
 
   GHashTable *states;
 
+  gboolean    running;
   guint       idle_source_id;
 } GsmStateMachinePrivate;
 
@@ -55,6 +56,7 @@ enum {
   PROP_0,
   PROP_STATE,
   PROP_STATE_TYPE,
+  PROP_RUNNING,
   N_PROPS
 };
 
@@ -589,6 +591,10 @@ gsm_state_machine_get_property (GObject    *object,
       g_value_set_gtype (value, priv->state_type);
       break;
 
+    case PROP_RUNNING:
+      g_value_set_boolean (value, priv->running);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
@@ -643,6 +649,11 @@ gsm_state_machine_set_property (GObject      *object,
 
       break;
 
+    case PROP_RUNNING:
+      gsm_state_machine_set_running (self, g_value_get_boolean (value));
+
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
@@ -671,6 +682,12 @@ gsm_state_machine_class_init (GsmStateMachineClass *klass)
                         "The type of the state enum",
                         G_TYPE_ENUM,
                         G_PARAM_CONSTRUCT_ONLY | G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  properties[PROP_RUNNING] =
+    g_param_spec_boolean ("running", "Running",
+                          "Whether the state machine is updating from an idle handler",
+                          FALSE,
+                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (object_class, N_PROPS, properties);
 
@@ -895,6 +912,9 @@ gsm_state_machine_internal_queue_update (GsmStateMachine *state_machine)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
 
+  if (!priv->running)
+    return;
+
   if (priv->idle_source_id)
     return;
   priv->idle_source_id = g_idle_add (gsm_state_machine_internal_idle_update, state_machine);
@@ -914,6 +934,32 @@ gsm_state_machine_get_state_type (GsmStateMachine  *state_machine)
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
 
   return priv->state_type;
+}
+
+gboolean
+gsm_state_machine_get_running (GsmStateMachine  *state_machine)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+
+  return priv->running;
+}
+
+void
+gsm_state_machine_set_running (GsmStateMachine  *state_machine,
+                               gboolean          running)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+
+  priv->running = running;
+
+  if (priv->running)
+    gsm_state_machine_internal_queue_update (state_machine);
+  else
+    {
+      if (priv->idle_source_id)
+        g_source_remove (priv->idle_source_id);
+      priv->idle_source_id = 0;
+    }
 }
 
 void

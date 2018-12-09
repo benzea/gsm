@@ -80,6 +80,7 @@ test_simple_machine (void)
                     "swapped-signal::state-exit::b", count_signal, &counter_state_exit_b,
                     NULL);
 
+  gsm_state_machine_set_running (sm, TRUE);
 
   g_value_init (&value, G_TYPE_BOOLEAN);
   g_value_set_boolean (&value, FALSE);
@@ -140,7 +141,6 @@ test_groups (void)
 {
   GMainContext *ctx = g_main_context_default ();
   g_autoptr(GsmStateMachine) sm = NULL;
-  g_auto(GValue) value = G_VALUE_INIT;
 
   sm = gsm_state_machine_new (TEST_TYPE_STATE_MACHINE);
 
@@ -153,10 +153,7 @@ test_groups (void)
                               TEST_STATE_A,
                               NULL);
 
-  /* XXX: Just so the machine updates */
-  g_value_init (&value, G_TYPE_BOOLEAN);
-  g_value_set_boolean (&value, TRUE);
-  gsm_state_machine_set_input_value (sm, "bool-in", &value);
+  gsm_state_machine_set_running (sm, TRUE);
   while (g_main_context_iteration (ctx, FALSE)) {}
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
 }
@@ -268,6 +265,8 @@ test_output (void)
                               "!bool", NULL);
 
 
+  gsm_state_machine_set_running (sm, TRUE);
+
   g_value_init (&value_bool, G_TYPE_BOOLEAN);
   g_value_set_boolean (&value_bool, TRUE);
   gsm_state_machine_set_input_value (sm, "bool", &value_bool);
@@ -336,6 +335,7 @@ test_events (void)
                               TEST_STATE_B, TEST_STATE_A,
                               NULL);
 
+  gsm_state_machine_set_running (sm, TRUE);
 
   g_main_context_iteration (ctx, FALSE);
   g_value_init (&value, G_TYPE_BOOLEAN);

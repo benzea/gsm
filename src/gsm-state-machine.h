@@ -55,6 +55,10 @@ GsmStateMachine *gsm_state_machine_new                 (GType state_type);
 gint             gsm_state_machine_get_state           (GsmStateMachine  *state_machine);
 GType            gsm_state_machine_get_state_type      (GsmStateMachine  *state_machine);
 
+gboolean         gsm_state_machine_get_running         (GsmStateMachine  *state_machine);
+void             gsm_state_machine_set_running         (GsmStateMachine  *state_machine,
+                                                        gboolean          running);
+
 void             gsm_state_machine_add_event           (GsmStateMachine  *state_machine,
                                                         const gchar      *event);
 void             gsm_state_machine_queue_event          (GsmStateMachine  *state_machine,

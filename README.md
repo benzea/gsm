@@ -130,9 +130,9 @@ Example defintion:
 
 Example updates:
 ```
-  gsm_state_machine_set_input_value (sm, "float", (gdouble) 10.0);
+  gsm_state_machine_set_input (sm, "float", (gdouble) 10.0);
 
-  gsm_state_machine_set_input_value (sm, "bool-in", FALSE);
+  gsm_state_machine_set_input (sm, "bool-in", FALSE);
 
   gsm_state_machine_set_queue_event (sm, "event");
 ```

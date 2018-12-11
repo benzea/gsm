@@ -21,6 +21,8 @@
 #include <gobject/gvaluecollector.h>
 #include "gsm-state-machine.h"
 
+typedef struct _GsmStateMachineState GsmStateMachineState;
+
 typedef struct
 {
   GType       state_type;
@@ -35,13 +37,15 @@ typedef struct
 
   GList      *pending_events;
 
-  GPtrArray  *state_groups;
-
   GHashTable *inputs;
   GHashTable *outputs;
   GArray     *outputs_quark;
 
+  GPtrArray  *current_outputs;
+
   GHashTable *states;
+  GsmStateMachineState *all_state;
+  gint        last_group;
 
   gboolean    running;
   guint       idle_source_id;
@@ -73,63 +77,6 @@ enum {
   N_SIGNALS,
 };
 static guint signals [N_SIGNALS];
-
-/* A group of states with a leader */
-typedef struct
-{
-  gint  leader;
-  gint *states;
-  gint  num_states;
-} GsmStateMachineGroup;
-
-static GsmStateMachineGroup*
-gsm_state_machine_group_new ()
-{
-  GsmStateMachineGroup* res = g_new0 (GsmStateMachineGroup, 1);
-
-  res->leader = -1;
-
-  return res;
-}
-
-static void
-gsm_state_machine_group_destroy (GsmStateMachineGroup* group)
-{
-  g_clear_pointer (&group->states, g_free);
-  group->states = 0;
-  group->leader = -1;
-  g_free (group);
-}
-
-#if 0
-static gboolean
-gsm_state_machine_group_equal (GsmStateMachineGroup *a, GsmStateMachineGroup *b)
-{
-  if (a->leader != b->leader)
-    return FALSE;
-
-  if (a->num_states != b->num_states)
-    return FALSE;
-
-  /* Just do a memcmp, that does the trick */
-  if (memcmp (a->states, b->states, a->num_states * sizeof(gint)) != 0)
-    return FALSE;
-
-  return TRUE;
-}
-#endif
-
-static GsmStateMachineGroup*
-gsm_state_machine_get_group (GsmStateMachine *state_machine, gint group_state)
-{
-  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
-  gint idx = abs (group_state) - 1;
-
-  g_assert (group_state < 0);
-  g_assert (idx < priv->state_groups->len);
-
-  return g_ptr_array_index (priv->state_groups, idx);
-}
 
 /* An input condition with one or more virtual conditions */
 typedef struct
@@ -234,19 +181,6 @@ gsm_state_machine_transition_new ()
   return res;
 }
 
-static GsmStateMachineTransition*
-gsm_state_machine_transition_copy (const GsmStateMachineTransition* src)
-{
-  GsmStateMachineTransition *res;
-
-  res = g_new0 (GsmStateMachineTransition, 1);
-  res->target_state = src->target_state;
-  res->conditions = g_array_new (FALSE, TRUE, sizeof(GQuark));
-  g_array_append_vals (res->conditions, src->conditions->data, src->conditions->len);
-
-  return res;
-}
-
 static void
 gsm_state_machine_transition_destroy (GsmStateMachineTransition *transition)
 {
@@ -254,22 +188,14 @@ gsm_state_machine_transition_destroy (GsmStateMachineTransition *transition)
   g_free (transition);
 }
 
-static int
-_int_cmp (gconstpointer a, gconstpointer b)
+
+struct _GsmStateMachineState
 {
-  gint *ai = (gint*) a;
-  gint *bi = (gint*) b;
+  GsmStateMachineState *parent;
+  GsmStateMachineState *leader;
+  GPtrArray            *all_children;
 
-  if (*ai > *bi)
-    return 1;
-  if (*ai < *bi)
-    return -1;
-  return 0;
-}
-
-
-typedef struct
-{
+  gint          value;
   GQuark        nick;
 
   /* This points either into a GsmStateMachineValue associated with an input or output,
@@ -278,8 +204,7 @@ typedef struct
   GPtrArray    *owned_values;
 
   GPtrArray    *transitions;
-
-} GsmStateMachineState;
+};
 
 
 static gint
@@ -357,6 +282,8 @@ _condition_expand (GQuark active, GsmStateMachineCondition *condition, GArray *t
   g_assert (active == 0 || found == TRUE);
 }
 
+typedef gboolean (GsmConditionsCompareFunc) (GArray *set, GArray *conditions);
+
 static gboolean
 _conditions_is_subset (GArray *set, GArray *conditions)
 {
@@ -371,7 +298,7 @@ _conditions_is_subset (GArray *set, GArray *conditions)
       while ((j < set->len) && (g_array_index (set, GQuark, j) < condition))
         j++;
 
-      if (j > set->len || condition != g_array_index (set, GQuark, j))
+      if ((j >= set->len) || (condition != g_array_index (set, GQuark, j)))
         return FALSE;
     }
 
@@ -441,27 +368,15 @@ _machine_has_event (GsmStateMachine *state_machine, GQuark event)
 static void
 gsm_state_machine_state_ensure_outputs (GsmStateMachineState *state, GHashTable *outputs)
 {
-  GHashTableIter iter;
-  const GsmStateMachineValue *value;
-  gint current;
   gint count = g_hash_table_size (outputs);
 
   if (!state->outputs)
     state->outputs = g_ptr_array_new_full (count, NULL);
 
-  current = state->outputs->len;
-  if (current == count)
+  if (state->outputs->len == count)
     return;
 
   g_ptr_array_set_size (state->outputs, count);
-
-  g_hash_table_iter_init (&iter, outputs);
-  while (g_hash_table_iter_next (&iter, NULL, (gpointer*)&value))
-    {
-      g_assert (value->idx < count);
-
-      state->outputs->pdata[value->idx] = (gpointer) &value->value;
-    }
 }
 
 static void
@@ -472,12 +387,13 @@ _value_free (gpointer data)
 }
 
 static GsmStateMachineState*
-gsm_state_machine_state_new (GQuark nick)
+gsm_state_machine_state_new (GQuark nick, gint value)
 {
   GsmStateMachineState *res = g_new0 (GsmStateMachineState, 1);
 
   /* We know that nick is from an GEnumValue */
   res->nick = nick;
+  res->value = value;
   res->outputs = g_ptr_array_new ();
   res->owned_values = g_ptr_array_new_with_free_func (_value_free);
   res->transitions = g_ptr_array_new_with_free_func ((GDestroyNotify) gsm_state_machine_transition_destroy);
@@ -485,11 +401,88 @@ gsm_state_machine_state_new (GQuark nick)
   return res;
 }
 
+static GsmStateMachineTransition*
+gsm_state_machine_real_find_transition (GsmStateMachineState      *state,
+                                        GQuark                     event,
+                                        GArray                    *conditions,
+                                        GsmConditionsCompareFunc   test_func)
+{
+  for (guint i = 0; i < state->transitions->len; i++)
+    {
+      GsmStateMachineTransition *item = g_ptr_array_index (state->transitions, i);
+
+      /* Cannot match if the events differ. */
+      if (event != item->event)
+        continue;
+
+      if (test_func (conditions, item->conditions))
+        return item;
+    }
+
+  return NULL;
+}
+
+static GsmStateMachineTransition*
+gsm_state_machine_find_transition (GsmStateMachineState      *state,
+                                   GQuark                     event,
+                                   GArray                    *conditions,
+                                   GsmConditionsCompareFunc   test_func,
+                                   GsmStateMachineState     **in_state)
+{
+  do
+    {
+      GsmStateMachineTransition* res;
+      res = gsm_state_machine_real_find_transition (state, event, conditions, test_func);
+      if (res)
+        {
+          if (in_state)
+            *in_state = state;
+          return res;
+        }
+
+      state = state->parent;
+    }
+  while (state);
+
+  return NULL;
+}
+
+static GsmStateMachineTransition*
+gsm_state_machine_children_find_transition (GsmStateMachineState      *state,
+                                            GQuark                     event,
+                                            GArray                    *conditions,
+                                            GsmConditionsCompareFunc   test_func,
+                                            GsmStateMachineState     **in_state)
+{
+  GsmStateMachineTransition* res;
+
+  res = gsm_state_machine_real_find_transition (state, event, conditions, test_func);
+  if (res)
+    {
+      if (in_state)
+        *in_state = state;
+      return res;
+    }
+
+  if (!state->all_children)
+    return NULL;
+
+  for (guint i = 0; i < state->all_children->len; i++)
+    {
+      res = gsm_state_machine_children_find_transition (g_ptr_array_index (state->all_children, i), event, conditions, test_func, in_state);
+      if (res)
+        return res;
+    }
+
+  return NULL;
+}
+
 static void
 gsm_state_machine_state_add_transition (GsmStateMachine            *state_machine,
                                         GsmStateMachineState       *state,
                                         GsmStateMachineTransition  *transition)
 {
+  GsmStateMachineState *in_state = NULL;
   g_autoptr(GArray) conditions_neg = NULL;
 
   conditions_neg = g_array_new (FALSE, FALSE, sizeof(GQuark));
@@ -504,23 +497,40 @@ gsm_state_machine_state_add_transition (GsmStateMachine            *state_machin
     }
   g_array_sort (conditions_neg, _condition_cmp);
 
-  for (guint i = 0; i < state->transitions->len; i++)
+  if (gsm_state_machine_find_transition (state, transition->event, conditions_neg, _conditions_is_disjunct, &in_state) ||
+      gsm_state_machine_children_find_transition (state, transition->event, conditions_neg, _conditions_is_disjunct, &in_state))
     {
-      GsmStateMachineTransition *item = g_ptr_array_index (state->transitions, i);
-
-      /* Everything is good if the events differ. */
-      if (transition->event != item->event)
-        continue;
-
-      if (_conditions_is_disjunct (item->conditions, conditions_neg))
-        {
-          g_critical ("Transitions on state \"%s\" are not mutally exclusive", g_quark_to_string (state->nick));
-          gsm_state_machine_transition_destroy (transition);
-          return;
-        }
+       g_critical ("Transition added to state \"%s\" conflicts with state \"%s\"",
+                   g_quark_to_string (state->nick),
+                   g_quark_to_string (in_state->nick));
+       gsm_state_machine_transition_destroy (transition);
+       return;
     }
 
   g_ptr_array_add (state->transitions, transition);
+}
+
+static void
+gsm_state_machine_state_reparent (GsmStateMachineState *state, GsmStateMachineState *new_parent)
+{
+  /* The states must be sibblings for this to work. */
+  g_assert (state->parent == NULL || state->parent == new_parent->parent);
+  /* The new parent must not be a final state. */
+  g_assert (new_parent->value < 0);
+
+  /* The new group state might still be empty, if yes, setup the leader */
+  if (new_parent->leader == NULL)
+    {
+      g_assert (new_parent->all_children == NULL);
+      new_parent->leader = state;
+      new_parent->all_children = g_ptr_array_new ();
+    }
+
+  if (state->parent)
+    g_assert (g_ptr_array_remove (state->parent->all_children, state));
+
+  g_ptr_array_add (new_parent->all_children, state);
+  state->parent = new_parent;
 }
 
 static void
@@ -529,6 +539,7 @@ gsm_state_machine_state_destroy (GsmStateMachineState *state)
   g_clear_pointer (&state->outputs, g_ptr_array_unref);
   g_clear_pointer (&state->owned_values, g_ptr_array_unref);
   g_clear_pointer (&state->transitions, g_ptr_array_unref);
+  g_clear_pointer (&state->all_children, g_ptr_array_unref);
 
   g_free (state);
 }
@@ -559,13 +570,13 @@ gsm_state_machine_finalize (GObject *object)
   g_clear_pointer (&priv->inputs, g_hash_table_unref);
   g_clear_pointer (&priv->outputs, g_hash_table_unref);
 
+  g_clear_pointer (&priv->current_outputs, g_ptr_array_unref);
+
   g_clear_pointer (&priv->states, g_hash_table_unref);
 
   g_clear_pointer (&priv->input_conditions, g_ptr_array_unref);
   g_clear_pointer (&priv->active_conditions, g_array_unref);
   g_clear_pointer (&priv->outputs_quark, g_array_unref);
-
-  g_clear_pointer (&priv->state_groups, g_ptr_array_unref);
 
   if (priv->idle_source_id)
     g_source_remove (priv->idle_source_id);
@@ -610,8 +621,7 @@ gsm_state_machine_set_property (GObject      *object,
   GsmStateMachine *self = GSM_STATE_MACHINE (object);
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (self);
   g_autoptr(GEnumClass) enum_class = NULL;
-  GsmStateMachineGroup *all_group = NULL;
-  GArray *group_members = NULL;
+
 
   switch (prop_id)
     {
@@ -625,28 +635,33 @@ gsm_state_machine_set_property (GObject      *object,
       if (!g_enum_get_value (enum_class, 0))
         g_error ("Enum must contain a value of 0 for the initial state.");
 
-      all_group = gsm_state_machine_group_new ();
-      all_group->leader = 0;
-      group_members = g_array_new (FALSE, FALSE, sizeof(gint));
+      priv->all_state = gsm_state_machine_state_new (g_quark_from_static_string ("all"), -1);
+      priv->last_group = -1;
+      g_hash_table_insert (priv->states,
+                           GINT_TO_POINTER (-1),
+                           priv->all_state);
 
       for (guint i = 0; i < enum_class->n_values; i++)
         {
+          GsmStateMachineState *state;
           GEnumValue *enum_value = &enum_class->values[i];
-          g_array_append_val (group_members, enum_value->value);
 
           if (enum_value->value < 0)
             g_error ("Negative values are reserved by the state machine and cannot be used in the state enum type.");
 
+          state = gsm_state_machine_state_new (g_quark_from_static_string (enum_value->value_nick),
+                                               enum_value->value);
+          gsm_state_machine_state_reparent (state, priv->all_state);
           g_hash_table_insert (priv->states,
                                GINT_TO_POINTER (enum_value->value),
-                               gsm_state_machine_state_new (g_quark_from_static_string (enum_value->value_nick)));
+                               state);
+
+          /* We may not add the zero state first, so just set it like this. */
+          if (state == 0)
+            priv->all_state->leader = state;
         }
 
-      g_array_sort (group_members, _int_cmp);
-      all_group->num_states = group_members->len;
-      all_group->states = (gint*) g_array_free (group_members, FALSE);
-
-      g_ptr_array_add (priv->state_groups, all_group);
+      g_assert (priv->all_state->leader);
 
       break;
 
@@ -747,11 +762,11 @@ gsm_state_machine_init (GsmStateMachine *self)
   priv->inputs = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, (GDestroyNotify) gsm_state_machine_value_destroy);
   priv->outputs = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, (GDestroyNotify) gsm_state_machine_value_destroy);
 
+  priv->current_outputs = g_ptr_array_new ();
+
   priv->outputs_quark = g_array_new (FALSE, TRUE, sizeof (GQuark));
 
   priv->active_conditions = g_array_new (TRUE, TRUE, sizeof (GQuark));
-
-  priv->state_groups = g_ptr_array_new_with_free_func ((GDestroyNotify) gsm_state_machine_group_destroy);
 
   priv->states = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) gsm_state_machine_state_destroy);
 }
@@ -781,42 +796,51 @@ gsm_state_machine_internal_update_conditionals (GsmStateMachine *state_machine)
 }
 
 static void
-gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint target_state)
+gsm_state_machine_internal_update_outputs (GsmStateMachine *state_machine, GsmStateMachineState *sm_state_real)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
-  gint old_state;
-  GsmStateMachineState *sm_state_old;
-  GsmStateMachineState *sm_state_new;
+  g_autoptr(GPtrArray)  old_outputs = NULL;
+  gboolean output_missing;
 
-  old_state = priv->state;
-  sm_state_old = g_hash_table_lookup (priv->states, GINT_TO_POINTER (old_state));
-  g_assert (sm_state_old);
+  old_outputs = priv->current_outputs;
+  priv->current_outputs = g_ptr_array_sized_new (old_outputs->len);
+  g_ptr_array_set_size (priv->current_outputs, old_outputs->len);
 
-  g_signal_emit (state_machine,
-                 signals[SIGNAL_STATE_EXIT],
-                 sm_state_old->nick,
-                 old_state, target_state);
+  do
+    {
+      output_missing = TRUE;
 
-  sm_state_new = g_hash_table_lookup (priv->states, GINT_TO_POINTER (target_state));
-  g_assert (sm_state_new);
+      if (sm_state_real->outputs)
+        {
+          output_missing = FALSE;
 
-  g_debug ("Doing transition from state \"%s\" to state \"%s\"",
-           g_quark_to_string (sm_state_old->nick),
-           g_quark_to_string (sm_state_new->nick));
+          for (guint i = 0; i < priv->current_outputs->len; i++)
+            {
+              if (g_ptr_array_index (priv->current_outputs, i) != NULL)
+                continue;
 
-  priv->state = target_state;
-  g_object_notify_by_pspec (G_OBJECT (state_machine), properties[PROP_STATE]);
+              /* The state might not have the full array. */
+              if (i < sm_state_real->outputs->len)
+                g_ptr_array_index (priv->current_outputs, i) = g_ptr_array_index (sm_state_real->outputs, i);
 
-  /* XXX: Is this really necessary? */
-  gsm_state_machine_state_ensure_outputs (sm_state_new, priv->outputs);
+              if (g_ptr_array_index (priv->current_outputs, i) == NULL)
+                output_missing = TRUE;
+            }
+        }
 
-  for (guint i = 0; i < sm_state_new->outputs->len; i++)
+      sm_state_real = sm_state_real->parent;
+    }
+  while (output_missing);
+
+  g_debug ("emitting signals ");
+
+  for (guint i = 0; i < priv->current_outputs->len; i++)
     {
       GValue *old_value;
       GValue *new_value;
 
-      old_value = g_ptr_array_index (sm_state_old->outputs, i);
-      new_value = g_ptr_array_index (sm_state_new->outputs, i);
+      old_value = g_ptr_array_index (old_outputs, i);
+      new_value = g_ptr_array_index (priv->current_outputs, i);
 
       /* Values point to the same object, nothing can have changed. */
       if (old_value == new_value)
@@ -828,6 +852,47 @@ gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint targe
                      g_quark_to_string (g_array_index (priv->outputs_quark, GQuark, i)),
                      new_value, TRUE);
     }
+}
+
+static gboolean
+gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint target_state)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  gint old_state;
+  GsmStateMachineState *sm_state_old;
+  GsmStateMachineState *sm_state_new;
+  GsmStateMachineState *sm_state_real;
+
+  old_state = priv->state;
+  sm_state_old = g_hash_table_lookup (priv->states, GINT_TO_POINTER (old_state));
+  g_assert (sm_state_old);
+
+  sm_state_new = g_hash_table_lookup (priv->states, GINT_TO_POINTER (target_state));
+  g_assert (sm_state_new);
+
+  sm_state_real = sm_state_new;
+  while (sm_state_real->leader)
+    sm_state_real = sm_state_real->leader;
+
+  if (sm_state_old == sm_state_real)
+    return FALSE;
+
+  target_state = sm_state_real->value;
+
+  g_signal_emit (state_machine,
+                 signals[SIGNAL_STATE_EXIT],
+                 sm_state_old->nick,
+                 old_state, target_state);
+
+  g_debug ("Doing transition from state \"%s\" to state \"%s\" (\"%s\")",
+           g_quark_to_string (sm_state_old->nick),
+           g_quark_to_string (sm_state_real->nick),
+           sm_state_new != sm_state_real ? g_quark_to_string (sm_state_new->nick) : "-");
+
+  priv->state = target_state;
+  g_object_notify_by_pspec (G_OBJECT (state_machine), properties[PROP_STATE]);
+
+  gsm_state_machine_internal_update_outputs (state_machine, sm_state_real);
 
   g_signal_emit (state_machine,
                  signals[SIGNAL_STATE_ENTER],
@@ -836,6 +901,8 @@ gsm_state_machine_internal_set_state (GsmStateMachine *state_machine, gint targe
 
   /* We may need further updates */
   gsm_state_machine_internal_queue_update (state_machine);
+
+  return TRUE;
 }
 
 static gboolean
@@ -843,24 +910,16 @@ gsm_state_machine_internal_get_next_state (GsmStateMachine *state_machine, gint 
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
   GsmStateMachineState *sm_state = NULL;
+  GsmStateMachineTransition *transition;
 
   sm_state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (start_state));
   g_assert (sm_state);
 
-  for (guint i = 0; i < sm_state->transitions->len; i++)
+  transition = gsm_state_machine_find_transition (sm_state, priv->active_event, priv->active_conditions, _conditions_is_subset, NULL);
+  if (transition)
     {
-      GsmStateMachineTransition *transition;
-      transition = g_ptr_array_index (sm_state->transitions, i);
-
-      /* Do not consider edge if the event does not match. */
-      if (transition->event != priv->active_event)
-        continue;
-
-      if (_conditions_is_subset (priv->active_conditions, transition->conditions))
-        {
-          *new_state = transition->target_state;
-          return TRUE;
-        }
+      *new_state = transition->target_state;
+      return TRUE;
     }
 
   return FALSE;
@@ -876,6 +935,9 @@ gsm_state_machine_internal_update (GsmStateMachine *state_machine)
   gsm_state_machine_internal_update_conditionals (state_machine);
 
   transitioned = gsm_state_machine_internal_get_next_state (state_machine, priv->state, &next_state);
+  if (transitioned)
+    transitioned = gsm_state_machine_internal_set_state (state_machine, next_state);
+
   if (!transitioned)
     {
       /* The state machine is currently stable, we can execute an event if one is pending */
@@ -888,11 +950,10 @@ gsm_state_machine_internal_update (GsmStateMachine *state_machine)
       /* Re-check if the event caused a transition. */
       transitioned = gsm_state_machine_internal_get_next_state (state_machine, priv->state, &next_state);
       priv->active_event = 0;
-      if (!transitioned)
-        return;
-    }
 
-  gsm_state_machine_internal_set_state (state_machine, next_state);
+      if (transitioned)
+        gsm_state_machine_internal_set_state (state_machine, next_state);
+    }
 }
 
 static gboolean
@@ -1033,6 +1094,13 @@ gsm_state_machine_add_output (GsmStateMachine  *state_machine,
 
   g_hash_table_insert (priv->outputs, (gpointer) pspec->name, value);
 
+  /* Set default value in global table and the ALL group */
+  g_assert (priv->current_outputs->len == value->idx);
+  g_ptr_array_add (priv->current_outputs, &value->value);
+
+  g_assert (priv->all_state->outputs->len == value->idx);
+  g_ptr_array_add (priv->all_state->outputs, &value->value);
+
   quark = g_quark_from_static_string (pspec->name);
   g_array_append_val (priv->outputs_quark, quark);
 }
@@ -1098,7 +1166,6 @@ gsm_state_machine_set_input_value (GsmStateMachine  *state_machine,
                                    const GValue     *value)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
-  GsmStateMachineState *sm_state;
   GsmStateMachineValue *input_value;
 
   input_value = g_hash_table_lookup (priv->inputs, input);
@@ -1107,15 +1174,10 @@ gsm_state_machine_set_input_value (GsmStateMachine  *state_machine,
 
   g_signal_emit (state_machine, signals[SIGNAL_INPUT_CHANGED], g_quark_from_string (input), input, value);
 
-  sm_state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (priv->state));
-  g_assert (sm_state);
-
-  gsm_state_machine_state_ensure_outputs (sm_state, priv->outputs);
-
-  for (guint i = 0; i < sm_state->outputs->len; i++)
+  for (guint i = 0; i < priv->current_outputs->len; i++)
     {
       /* Output value was updated if the pointers are identical. */
-      if (&input_value->value != g_ptr_array_index (sm_state->outputs, i))
+      if (&input_value->value != g_ptr_array_index (priv->current_outputs, i))
         continue;
 
       g_signal_emit (state_machine,
@@ -1141,20 +1203,12 @@ gsm_state_machine_get_output_value (GsmStateMachine  *state_machine,
                                     GValue           *out)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
-  GsmStateMachineState *sm_state;
   GsmStateMachineValue *output_value;
 
   output_value = g_hash_table_lookup (priv->outputs, output);
 
-  sm_state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (priv->state));
-  g_assert (sm_state);
-
-  gsm_state_machine_state_ensure_outputs (sm_state, priv->outputs);
-
-  output_value = g_hash_table_lookup (priv->outputs, output);
-
   g_value_init (out, G_VALUE_TYPE (&output_value->value));
-  g_value_copy (sm_state->outputs->pdata[output_value->idx], out);
+  g_value_copy (g_ptr_array_index (priv->current_outputs, output_value->idx), out);
 }
 
 void
@@ -1183,7 +1237,7 @@ gsm_state_machine_set_output (GsmStateMachine  *state_machine,
     }
   else
     {
-
+      gsm_state_machine_set_output_value (state_machine, state, output, &value);
     }
   va_end (var_args);
 }
@@ -1217,14 +1271,12 @@ gsm_state_machine_set_output_value (GsmStateMachine  *state_machine,
   g_value_copy (value, new);
   sm_state->outputs->pdata[output_value->idx] = new;
 
+  while (sm_state->leader)
+    sm_state = sm_state->leader;
+
+  /* If we are currently in this state, then the output may have changed */
   if (state == priv->state)
-    {
-      g_signal_emit (state_machine,
-                     signals[SIGNAL_OUTPUT_CHANGED],
-                     g_array_index (priv->outputs_quark, GQuark, output_value->idx),
-                     g_quark_to_string (g_array_index (priv->outputs_quark, GQuark, output_value->idx)),
-                     new, FALSE, FALSE);
-    }
+    gsm_state_machine_internal_update_outputs (state_machine, sm_state);
 }
 
 
@@ -1390,33 +1442,22 @@ gsm_state_machine_add_edge_strv (GsmStateMachine  *state_machine,
                                  const GStrv       conditions)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
-  GsmStateMachineGroup *start_group = NULL;
   GsmStateMachineState *sm_state;
   GsmStateMachineTransition *transition;
   guint conditions_len = g_strv_length (conditions);
 
-  if (start_state < 0)
-    {
-      start_group = gsm_state_machine_get_group(state_machine, start_state);
-      start_state = start_group->leader;
-    }
+  g_return_if_fail (start_state != target_state);
 
   sm_state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (start_state));
   g_assert (sm_state);
 
-  /* If the target state is a group, then fetch the leader. */
-  if (target_state < 0)
-    {
-      GsmStateMachineGroup *group = gsm_state_machine_get_group(state_machine, target_state);
-      target_state = group->leader;
-    }
-
-  /* Check the target state exists */
+  /* Check the target state (or group) exists */
   g_assert (g_hash_table_lookup (priv->states, GINT_TO_POINTER (target_state)));
 
   transition = gsm_state_machine_transition_new ();
   transition->target_state = target_state;
 
+  /* Build the conditions quark list */
   for (gint i = 0; i < conditions_len; i++)
     {
       GQuark condition = g_quark_from_string (conditions[i]);
@@ -1443,28 +1484,147 @@ gsm_state_machine_add_edge_strv (GsmStateMachine  *state_machine,
 
   g_array_sort (transition->conditions, _condition_cmp);
 
-  /* Copy transition into all possible start states */
-  if (start_group)
+  gsm_state_machine_state_add_transition (state_machine, sm_state, transition);
+}
+
+gint
+gsm_state_machine_create_group (GsmStateMachine  *state_machine,
+                                const gchar*      name,
+                                gint              count,
+                                gint              first_child,
+                                ...)
+{
+  gint res;
+  gint i;
+  gint *children = g_malloc_n (count, sizeof (gint));
+  va_list var_args;
+
+  va_start (var_args, first_child);
+
+  children[0] = first_child;
+  for (i = 1; i < count; i++)
+    children[i] = va_arg (var_args, gint);
+
+  res = gsm_state_machine_create_group_array (state_machine, name, count, children);
+
+  va_end (var_args);
+  g_free (children);
+
+  return res;
+}
+
+gint
+gsm_state_machine_create_group_array (GsmStateMachine  *state_machine,
+                                      const gchar*      name,
+                                      gint              count,
+                                      gint             *children)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  GsmStateMachineState *group;
+  GsmStateMachineState *leader;
+  g_assert (count > 0);
+  g_assert (children);
+
+  priv->last_group--;
+
+  group = gsm_state_machine_state_new (g_quark_from_string (name), priv->last_group);
+  leader = g_hash_table_lookup (priv->states, GINT_TO_POINTER (children[0]));
+
+  /* Put the new group on the same level as the leader, then move the leader. */
+  gsm_state_machine_state_reparent (group, leader->parent);
+  gsm_state_machine_state_reparent (leader, group);
+
+  /* And move all the other ones. */
+  for (guint i = 1; i < count; i++)
     {
-      for (gint i = 0; i < start_group->num_states; i++)
-        {
-          GsmStateMachineState *group_state;
+      GsmStateMachineState *state;
 
-          /* Already handled the groups default state */
-          if (start_group->states[i] == start_state)
-            continue;
-
-          /* Do not add a route to the target state. */
-          if (start_group->states[i] == target_state)
-            continue;
-
-          group_state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (start_group->states[i]));
-          g_assert (group_state);
-          gsm_state_machine_state_add_transition (state_machine, group_state, gsm_state_machine_transition_copy (transition));
-        }
+      state = g_hash_table_lookup (priv->states, GINT_TO_POINTER (children[i]));
+      gsm_state_machine_state_reparent (state, group);
     }
 
-  gsm_state_machine_state_add_transition (state_machine, sm_state, transition);
+  g_hash_table_insert (priv->states, GINT_TO_POINTER (group->value), group);
+
+  return group->value;
+}
+
+void
+_add_nodes_to_dot (GsmStateMachine      *state_machine,
+                   GsmStateMachineState *state,
+                   GPtrArray            *chunks)
+{
+  if (state->value >= 0)
+    {
+      if (state->parent->leader == state)
+        g_ptr_array_add (chunks, g_strdup_printf ("  \"%s\" [shape=ellipse,color=green,pos=\"0,0!\"];", g_quark_to_string (state->nick)));
+      else
+        g_ptr_array_add (chunks, g_strdup_printf ("  \"%s\" [shape=ellipse];", g_quark_to_string (state->nick)));
+    }
+  else
+    {
+      g_ptr_array_add (chunks, g_strdup_printf ("  subgraph \"cluster_%s\" {", g_quark_to_string (state->nick)));
+      g_ptr_array_add (chunks, g_strdup_printf ("    label = \"%s\";", g_quark_to_string (state->nick)));
+
+      for (gint i = 0; i < state->all_children->len; i++)
+        _add_nodes_to_dot (state_machine, g_ptr_array_index (state->all_children, i), chunks);
+
+       g_ptr_array_add (chunks, g_strdup_printf ("  }"));
+  	}
+}
+
+void
+_add_transitions_to_dot (GsmStateMachine      *state_machine,
+                         GsmStateMachineState *state,
+                         GPtrArray            *chunks)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+
+  for (guint i = 0; i < state->transitions->len; i++)
+    {
+      GsmStateMachineTransition *transition = g_ptr_array_index (state->transitions, i);
+      GsmStateMachineState *target = g_hash_table_lookup (priv->states, GINT_TO_POINTER (transition->target_state));
+      GsmStateMachineState *real_target, *real_state;
+      g_autoptr(GPtrArray) conditions = g_ptr_array_new ();
+      g_autofree gchar *label = NULL;
+
+      real_target = target;
+      while (real_target->leader)
+        real_target = real_target->leader;
+
+      /* Ignore tranistions to ourselves */
+      if (state == real_target)
+        continue;
+
+      real_state = state;
+      while (real_state->leader)
+        real_state = real_state->leader;
+
+      if (transition->event)
+        g_ptr_array_add (conditions, (gpointer) g_quark_to_string (transition->event));
+
+      for (guint j = 0; j < transition->conditions->len; j++)
+        g_ptr_array_add (conditions, (gpointer) g_quark_to_string (g_array_index (transition->conditions, GQuark, j)));
+
+      g_ptr_array_add (conditions, NULL);
+      label = g_strjoinv (" &\n", (GStrv) conditions->pdata);
+
+      g_ptr_array_add (chunks,
+                       g_strdup_printf ("  \"%s\" -> \"%s\" [ label = \"%s\",color=\"%s%s%s%s%s\"];",
+                                        g_quark_to_string (real_state->nick),
+                                        g_quark_to_string (real_target->nick),
+                                        label,
+                                        transition->event ? "red" : "black",
+                                        state->value < 0 ? "\",ltail=\"cluster_" : "",
+                                        state->value < 0 ? g_quark_to_string (state->nick) : "",
+                                        target->value < 0 ? "\",lhead=\"cluster_" : "",
+                                        target->value < 0 ? g_quark_to_string (target->nick) : ""));
+    }
+
+  if (state->value < 0)
+    {
+      for (gint i = 0; i < state->all_children->len; i++)
+        _add_transitions_to_dot (state_machine, g_ptr_array_index (state->all_children, i), chunks);
+    }
 }
 
 void
@@ -1476,8 +1636,6 @@ gsm_state_machine_to_dot_file (GsmStateMachine  *state_machine,
   g_autofree gchar *file = NULL;
   g_autofree gchar *contents = NULL;
   g_autoptr(GPtrArray) chunks = NULL;
-  GsmStateMachineState *state;
-  GHashTableIter iter;
 
   if (!path)
     return;
@@ -1486,40 +1644,11 @@ gsm_state_machine_to_dot_file (GsmStateMachine  *state_machine,
 
   chunks = g_ptr_array_new_with_free_func (g_free);
 
-  g_ptr_array_add (chunks, g_strdup_printf (
-"digraph finite_state_machine {\n"
-"  rankdir=LR;\n"
-"  size=\"8,5\"\n"
-"  node [shape = ellipse];\n"
-));
+  g_ptr_array_add (chunks, g_strdup ("digraph finite_state_machine {"));
+  g_ptr_array_add (chunks, g_strdup ("  compound=true;"));
 
-  g_hash_table_iter_init (&iter, priv->states);
-  while (g_hash_table_iter_next (&iter, NULL, (gpointer*) &state))
-    {
-      for (guint i = 0; i < state->transitions->len; i++)
-        {
-          GsmStateMachineTransition *transition = g_ptr_array_index (state->transitions, i);
-          GsmStateMachineState *target = g_hash_table_lookup (priv->states, GINT_TO_POINTER (transition->target_state));
-          g_autoptr(GPtrArray) conditions = g_ptr_array_new ();
-          g_autofree gchar *label = NULL;
-
-          if (transition->event)
-            g_ptr_array_add (conditions, (gpointer) g_quark_to_string (transition->event));
-
-          for (guint j = 0; j < transition->conditions->len; j++)
-            g_ptr_array_add (conditions, (gpointer) g_quark_to_string (g_array_index (transition->conditions, GQuark, j)));
-
-          g_ptr_array_add (conditions, NULL);
-          label = g_strjoinv (" &\n", (GStrv) conditions->pdata);
-
-          g_ptr_array_add (chunks,
-                           g_strdup_printf ("  %s -> %s [ label = \"%s\",len=5,color=\"%s\" ];",
-                                            g_quark_to_string (state->nick),
-                                            g_quark_to_string (target->nick),
-                                            label,
-                                            transition->event ? "red" : "black"));
-        }
-    }
+  _add_nodes_to_dot (state_machine, priv->all_state, chunks);
+  _add_transitions_to_dot (state_machine, priv->all_state, chunks);
 
   g_ptr_array_add (chunks, g_strdup ("}"));
   g_ptr_array_add (chunks, NULL);

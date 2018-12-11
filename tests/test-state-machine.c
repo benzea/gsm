@@ -143,21 +143,33 @@ test_groups (void)
 {
   GMainContext *ctx = g_main_context_default ();
   g_autoptr(GsmStateMachine) sm = NULL;
+  gint group_ab;
 
   sm = gsm_state_machine_new (TEST_TYPE_STATE_MACHINE);
 
   gsm_state_machine_add_input (sm,
-                               g_param_spec_boolean ("bool-in", "BoolIn", "A test input boolean", FALSE, 0));
+                               g_param_spec_boolean ("bool-in", "BoolIn", "A test input boolean", TRUE, 0));
   gsm_state_machine_create_default_condition (sm, "bool-in");
 
+  group_ab = gsm_state_machine_create_group (sm, "group-ab", 2, TEST_STATE_A, TEST_STATE_B);
+
   gsm_state_machine_add_edge (sm,
-                              GSM_STATES_ALL,
-                              TEST_STATE_A,
-                              NULL);
+                              TEST_STATE_INIT,
+                              group_ab,
+                              "bool-in", NULL);
+
+  gsm_state_machine_add_edge (sm,
+                              group_ab,
+                              TEST_STATE_INIT,
+                              "!bool-in", NULL);
+
+  g_assert (group_ab < 0);
 
   gsm_state_machine_set_running (sm, TRUE);
   while (g_main_context_iteration (ctx, FALSE)) {}
   g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
+
+  gsm_state_machine_to_dot_file (sm, "groups.dot");
 }
 
 static void
@@ -181,7 +193,7 @@ test_orthogonal_transitions (void)
                               "bool",
                               NULL);
 
-  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*not mutally exclusive*");
+  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*Transition*conflicts with state*");
   /* Not possible to add as a "bool" transition already exists */
   gsm_state_machine_add_edge (sm,
                               TEST_STATE_INIT,
@@ -197,7 +209,7 @@ test_orthogonal_transitions (void)
                               "!bool",
                               NULL);
 
-  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*not mutally exclusive*");
+  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*Transition*conflicts with state*");
   /* Not possible, overlaps with previous */
   gsm_state_machine_add_edge (sm,
                               TEST_STATE_INIT,

@@ -141,6 +141,17 @@ void             gsm_state_machine_add_edge_strv       (GsmStateMachine  *state_
                                                         gint              target_state,
                                                         const GStrv       conditions);
 
+gint             gsm_state_machine_create_group        (GsmStateMachine  *state_machine,
+                                                        const gchar*      name,
+                                                        gint              count,
+                                                        gint              first_child,
+                                                        ...);
+
+gint             gsm_state_machine_create_group_array  (GsmStateMachine  *state_machine,
+                                                        const gchar*      name,
+                                                        gint              count,
+                                                        gint             *children);
+
 void             gsm_state_machine_to_dot_file         (GsmStateMachine  *state_machine,
                                                         gchar            *filename);
 

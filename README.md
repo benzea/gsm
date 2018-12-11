@@ -8,6 +8,7 @@ are welcome. You are also welcome to write something entirely new based on this.
 
 The state machine has the following properties:
 * A set of states, defined by GLib enum type
+* States can be nested inside groups
 * A set of inputs
 * A set of outputs, mapped to an input or fixed value for each state
 * A set of boolean conditionals, input values are mapped to a set of conditionals
@@ -51,8 +52,6 @@ Further improvements:
   all other conditionals. So we could define conditionals such as
   "`time::>1min`", "`time::>2min`", "`time::>3min`" and e.g. the "`!time::>2`"
   conditional represents the set "`time::>1`,`!time::>2`,`time::!>3`".
-* Add proper support for groups of states (an implicit ALL group already
-  exists). A group is defined as a set of states with one leader state.
 * Possibly add loop detection (i.e. an input condition that always updates)
 
 

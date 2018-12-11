@@ -88,12 +88,9 @@ void             gsm_state_machine_get_input_value     (GsmStateMachine  *state_
                                                         const gchar      *input,
                                                         GValue           *out);
 
-#if 0
 void             gsm_state_machine_set_input           (GsmStateMachine  *state_machine,
-                                                        gint              state,
                                                         const gchar      *input,
                                                         ...);
-#endif
 void             gsm_state_machine_set_input_value     (GsmStateMachine  *state_machine,
                                                         const gchar      *input,
                                                         const GValue     *value);

@@ -394,7 +394,6 @@ gsm_state_machine_state_new (GQuark nick, gint value)
   /* We know that nick is from an GEnumValue */
   res->nick = nick;
   res->value = value;
-  res->outputs = g_ptr_array_new ();
   res->owned_values = g_ptr_array_new_with_free_func (_value_free);
   res->transitions = g_ptr_array_new_with_free_func ((GDestroyNotify) gsm_state_machine_transition_destroy);
 
@@ -591,20 +590,19 @@ gsm_state_machine_get_property (GObject    *object,
                                 GParamSpec *pspec)
 {
   GsmStateMachine *self = GSM_STATE_MACHINE (object);
-  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (self);
 
   switch (prop_id)
     {
     case PROP_STATE:
-      g_value_set_enum (value, priv->state);
+      g_value_set_int (value, gsm_state_machine_get_state (self));
       break;
 
     case PROP_STATE_TYPE:
-      g_value_set_gtype (value, priv->state_type);
+      g_value_set_gtype (value, gsm_state_machine_get_state_type (self));
       break;
 
     case PROP_RUNNING:
-      g_value_set_boolean (value, priv->running);
+      g_value_set_boolean (value, gsm_state_machine_get_running (self));
       break;
 
     default:
@@ -636,6 +634,7 @@ gsm_state_machine_set_property (GObject      *object,
         g_error ("Enum must contain a value of 0 for the initial state.");
 
       priv->all_state = gsm_state_machine_state_new (g_quark_from_static_string ("all"), -1);
+      gsm_state_machine_state_ensure_outputs (priv->all_state, priv->outputs);
       priv->last_group = -1;
       g_hash_table_insert (priv->states,
                            GINT_TO_POINTER (-1),
@@ -657,7 +656,7 @@ gsm_state_machine_set_property (GObject      *object,
                                state);
 
           /* We may not add the zero state first, so just set it like this. */
-          if (state == 0)
+          if (state->value == 0)
             priv->all_state->leader = state;
         }
 
@@ -1154,11 +1153,35 @@ gsm_state_machine_get_input_value (GsmStateMachine  *state_machine,
   g_value_copy (&input_value->value, out);
 }
 
-#if 0
-void             gsm_state_machine_set_input           (GsmStateMachine  *state_machine,
-                                                        const gchar      *input,
-                                                        ...);
-#endif
+void
+gsm_state_machine_set_input (GsmStateMachine  *state_machine,
+                             const gchar      *input,
+                             ...)
+{
+  GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
+  GsmStateMachineValue *input_value;
+  g_autofree gchar *error = NULL;
+  GValue value;
+  va_list var_args;
+
+  input_value = g_hash_table_lookup (priv->inputs, input);
+  g_assert (input_value);
+
+  va_start (var_args, input);
+
+  G_VALUE_COLLECT_INIT (&value, input_value->pspec->value_type, var_args,
+                        0, &error);
+  if (error)
+    {
+      g_warning ("%s: %s", G_STRFUNC, error);
+      g_value_unset (&value);
+    }
+  else
+    {
+      gsm_state_machine_set_input_value (state_machine, input, &value);
+    }
+  va_end (var_args);
+}
 
 void
 gsm_state_machine_set_input_value (GsmStateMachine  *state_machine,
@@ -1330,7 +1353,7 @@ _state_machine_boolean_condition (GQuark condition, const GValue *value)
 static GQuark
 _state_machine_enum_condition (GQuark condition, const GValue *value)
 {
-  GEnumClass *enum_class = G_ENUM_CLASS (g_type_class_peek (g_value_get_gtype (value)));
+  GEnumClass *enum_class = G_ENUM_CLASS (g_type_class_peek (value->g_type));
   GEnumValue *enum_class_value;
   gint enum_value = g_value_get_enum (value);
   const gchar *value_nick;

@@ -64,8 +64,8 @@ test_simple_machine (void)
                                g_param_spec_boolean ("bool-in", "BoolIn", "A test input boolean", FALSE, 0));
   gsm_state_machine_add_input (sm,
                                g_param_spec_enum ("enum-in", "Enum", "A test input enum", TEST_TYPE_STATE_MACHINE, 0, 0));
-  gsm_state_machine_create_default_condition (sm, "bool-in");
-  gsm_state_machine_create_default_condition (sm, "enum-in");
+  gsm_state_machine_create_default_condition (sm, "bool-in", GSM_CONDITION_TYPE_EQ);
+  gsm_state_machine_create_default_condition (sm, "enum-in", GSM_CONDITION_TYPE_EQ);
 
   gsm_state_machine_add_edge (sm,
                               TEST_STATE_INIT,
@@ -158,7 +158,7 @@ test_groups (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool-in", "BoolIn", "A test input boolean", TRUE, 0));
-  gsm_state_machine_create_default_condition (sm, "bool-in");
+  gsm_state_machine_create_default_condition (sm, "bool-in", GSM_CONDITION_TYPE_EQ);
 
   group_ab = gsm_state_machine_create_group (sm, "group-ab", 2, TEST_STATE_A, TEST_STATE_B);
 
@@ -190,11 +190,11 @@ test_orthogonal_transitions (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool", "Bool1", "A test input boolean", FALSE, 0));
-  gsm_state_machine_create_default_condition (sm, "bool");
+  gsm_state_machine_create_default_condition (sm, "bool", GSM_CONDITION_TYPE_EQ);
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_enum ("enum", "Enum", "A test input enum", TEST_TYPE_STATE_MACHINE, 0, 0));
-  gsm_state_machine_create_default_condition (sm, "enum");
+  gsm_state_machine_create_default_condition (sm, "enum", GSM_CONDITION_TYPE_EQ);
 
   gsm_state_machine_add_edge (sm,
                               TEST_STATE_INIT,
@@ -202,7 +202,7 @@ test_orthogonal_transitions (void)
                               "bool",
                               NULL);
 
-  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*Transition*conflicts with state*");
+  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*Transition*conflicts*");
   /* Not possible to add as a "bool" transition already exists */
   gsm_state_machine_add_edge (sm,
                               TEST_STATE_INIT,
@@ -218,7 +218,7 @@ test_orthogonal_transitions (void)
                               "!bool",
                               NULL);
 
-  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*Transition*conflicts with state*");
+  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*Transition*conflicts*");
   /* Not possible, overlaps with previous */
   gsm_state_machine_add_edge (sm,
                               TEST_STATE_INIT,
@@ -252,7 +252,7 @@ test_output (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool", "Bool1", "A test input boolean", FALSE, 0));
-  gsm_state_machine_create_default_condition (sm, "bool");
+  gsm_state_machine_create_default_condition (sm, "bool", GSM_CONDITION_TYPE_EQ);
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_float ("float", "Float", "A float input", 0, 100, 0, 0));
@@ -327,7 +327,7 @@ test_events (void)
 
   gsm_state_machine_add_input (sm,
                                g_param_spec_boolean ("bool", "Bool", "A test input boolean", FALSE, 0));
-  gsm_state_machine_create_default_condition (sm, "bool");
+  gsm_state_machine_create_default_condition (sm, "bool", GSM_CONDITION_TYPE_EQ);
 
   gsm_state_machine_add_event (sm, "event");
 
@@ -371,6 +371,140 @@ test_events (void)
   gsm_state_machine_to_dot_file (sm, "event.dot");
 }
 
+static void
+test_enum_conditional_eq (void)
+{
+  GMainContext *ctx = g_main_context_default ();
+  g_autoptr(GsmStateMachine) sm = NULL;
+
+  sm = gsm_state_machine_new (TEST_TYPE_STATE_MACHINE);
+
+  gsm_state_machine_add_input (sm,
+                               g_param_spec_enum ("enum-eq", "EnumEqual",
+                                                  "A test input enum",
+                                                  TEST_TYPE_STATE_MACHINE,
+                                                  TEST_STATE_INIT, 0));
+  gsm_state_machine_create_default_condition (sm, "enum-eq", GSM_CONDITION_TYPE_EQ);
+
+  gsm_state_machine_add_event (sm, "event");
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT, TEST_STATE_A,
+                              "enum-eq::a",
+                              NULL);
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_A, TEST_STATE_B,
+                              "enum-eq::b",
+                              NULL);
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_B, TEST_STATE_INIT,
+                              "!enum-eq::b",
+                              NULL);
+
+  /* Fails because !a can mean b */
+  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*Transition*conflicts*");
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_A, TEST_STATE_INIT,
+                              "!enum-eq::a",
+                              NULL);
+  g_test_assert_expected_messages ();
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_A, TEST_STATE_INIT,
+                              "!enum-eq::a",
+                              "!enum-eq::b",
+                              NULL);
+
+  gsm_state_machine_set_running (sm, TRUE);
+
+  while (g_main_context_iteration (ctx, FALSE)) {}
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_INIT);
+
+  gsm_state_machine_set_input (sm, "enum-eq", TEST_STATE_A);
+  while (g_main_context_iteration (ctx, FALSE)) {}
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
+
+  gsm_state_machine_set_input (sm, "enum-eq", TEST_STATE_B);
+  while (g_main_context_iteration (ctx, FALSE)) {}
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_B);
+
+  gsm_state_machine_set_input (sm, "enum-eq", TEST_STATE_A);
+  g_main_context_iteration (ctx, FALSE);
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_INIT);
+  g_main_context_iteration (ctx, FALSE);
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
+
+  gsm_state_machine_to_dot_file (sm, "enum-conditional-eq.dot");
+}
+
+static void
+test_enum_conditional_leq (void)
+{
+  GMainContext *ctx = g_main_context_default ();
+  g_autoptr(GsmStateMachine) sm = NULL;
+
+  sm = gsm_state_machine_new (TEST_TYPE_STATE_MACHINE);
+
+  gsm_state_machine_add_input (sm,
+                               g_param_spec_enum ("enum-leq", "EnumGreaterEqual",
+                                                  "A test input enum",
+                                                  TEST_TYPE_STATE_MACHINE,
+                                                  TEST_STATE_INIT, 0));
+  gsm_state_machine_create_default_condition (sm, "enum-leq", GSM_CONDITION_TYPE_LEQ);
+
+  gsm_state_machine_add_event (sm, "event");
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT, TEST_STATE_A,
+                              ">enum-leq::init",
+                              NULL);
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_A, TEST_STATE_B,
+                              ">enum-leq::a",
+                              NULL);
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_B, TEST_STATE_A,
+                              "<=enum-leq::a",
+                              NULL);
+
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_A, TEST_STATE_INIT,
+                              "<=enum-leq::init",
+                              NULL);
+
+  /* Fails because b implies a and that is set already */
+  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "*Transition*conflicts*");
+  gsm_state_machine_add_edge (sm,
+                              TEST_STATE_INIT, TEST_STATE_B,
+                              "<=enum-leq::b",
+                              NULL);
+  g_test_assert_expected_messages ();
+
+  gsm_state_machine_set_running (sm, TRUE);
+
+  /* The machine should not move to begin with */
+  g_main_context_iteration (ctx, FALSE);
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_INIT);
+
+  gsm_state_machine_set_input (sm, "enum-leq", TEST_STATE_B);
+  g_main_context_iteration (ctx, FALSE);
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
+  g_main_context_iteration (ctx, FALSE);
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_B);
+
+  gsm_state_machine_set_input (sm, "enum-leq", TEST_STATE_INIT);
+  g_main_context_iteration (ctx, FALSE);
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_A);
+  g_main_context_iteration (ctx, FALSE);
+  g_assert_cmpint (gsm_state_machine_get_state (sm), ==, TEST_STATE_INIT);
+
+  gsm_state_machine_to_dot_file (sm, "enum-conditional-leq.dot");
+}
+
 int
 main (int argc, char **argv)
 {
@@ -393,6 +527,12 @@ main (int argc, char **argv)
 
   g_test_add_func ("/gsm-state-machine/events",
                    test_events);
+
+  g_test_add_func ("/gsm-state-machine/enum-conditional-eq",
+                   test_enum_conditional_eq);
+
+  g_test_add_func ("/gsm-state-machine/enum-conditional-leq",
+                   test_enum_conditional_leq);
 
   g_test_run ();
 }

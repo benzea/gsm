@@ -34,6 +34,24 @@ Other notes:
 * The enum cannot contain negative values (these are reserved for groups) and
   the initial state is defined as 0.
 * Inputs of type Enum and Boolean can currently be converted into conditionals
+* Enum conditionals can have a lesser equal/greater equal type. This means that
+  all lesser/greater states will also be set for matching. To make this explicit,
+  the user must prefix the matches with the `<=`/`>` prefix for lesser equal
+  and `>`/`<=` prefix for greater equal types. Example:
+
+  * A an input `user-idle` to mesure user activity could have the states
+    `active`, `1min`, `5min` with the type lesser equal. Meaningful matches
+    would be `>=user-idle::1min`, `>=user-idle::5min` and `<user-idle::1min`,
+    `<user-idle::5min` (valid but useless are `>=user-idle::active` and
+    `<user-idle::active`).
+
+  * An input `fuel-level` might be used in greater equal mode to measure the
+    fill level, with values of `empty`, `1quarter`, `half`, `3quarter` and
+    `full`. Meaningful matches would be `>=fuel-level::1quarter`,
+    `>=fuel-level::half`, `>=fuel-level::3quarter`, `>=fuel-level::full` and
+    `<fuel-level::1quarter`, `<fuel-level::half`, `fuel-level::3quarter`,
+    `<fuel-level::full`.
+
 * Events are processed one at a time and only when the machines state is
   stable. i.e. updating an input and fireing an event at the same time will
   first result in the input changes to be completely processed.
@@ -45,14 +63,9 @@ Other notes:
 
 Further improvements:
 * Allow finer control of when/how the state machine is updated
-* Allow conditionals with multiple conditions being turned on. Right now each
-  input is mapped to a set of boolean conditionals of which only one can be
-  TRUE at a time.
-  However, we only need a unique mapping from one conditional to the state of
-  all other conditionals. So we could define conditionals such as
-  "`time::>1min`", "`time::>2min`", "`time::>3min`" and e.g. the "`!time::>2`"
-  conditional represents the set "`time::>1`,`!time::>2`,`time::!>3`".
 * Possibly add loop detection (i.e. an input condition that always updates)
+* Review the lesser equal/greater equal conditional types.
+* Clean up the code a lot
 
 
 Example

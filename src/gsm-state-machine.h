@@ -29,8 +29,14 @@ G_BEGIN_DECLS
  *
  * Converts a #GValue value to a GQuark as used by the state machine.
  */
-typedef GQuark (*GsmStateMachineConditionFunc) (GQuark condition, const GValue *value);
 
+typedef enum {
+  GSM_CONDITION_TYPE_EQ,
+  GSM_CONDITION_TYPE_GEQ,
+  GSM_CONDITION_TYPE_LEQ,
+} GsmConditionType;
+
+typedef GQuark (*GsmConditionFunc) (GQuark condition, GsmConditionType type, const GValue *value);
 
 #define GSM_TYPE_STATE_MACHINE (gsm_state_machine_get_type())
 
@@ -114,13 +120,15 @@ void             gsm_state_machine_set_output_value    (GsmStateMachine  *state_
                                                         const GValue     *value);
 
 
-void             gsm_state_machine_create_condition    (GsmStateMachine  *state_machine,
-                                                        const gchar      *input,
-                                                        const GStrv       conditions,
-                                                        GsmStateMachineConditionFunc func);
+void             gsm_state_machine_create_condition    (GsmStateMachine      *state_machine,
+                                                        const gchar          *input,
+                                                        const GStrv           conditions,
+                                                        GsmConditionType      type,
+                                                        GsmConditionFunc      func);
 
-void             gsm_state_machine_create_default_condition (GsmStateMachine  *state_machine,
-                                                             const gchar      *input);
+void             gsm_state_machine_create_default_condition (GsmStateMachine      *state_machine,
+                                                             const gchar          *input,
+                                                             GsmConditionType      type);
 
 
 void             gsm_state_machine_add_edge            (GsmStateMachine  *state_machine,

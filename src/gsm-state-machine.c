@@ -81,7 +81,8 @@ static guint signals [N_SIGNALS];
 /* An input condition with one or more virtual conditions */
 typedef struct
 {
-  GsmStateMachineConditionFunc getter;
+  GsmConditionType type;
+  GsmConditionFunc getter;
 
   GQuark input;
   GArray *conditions;
@@ -118,12 +119,11 @@ gsm_state_machine_condition_from_quark (GsmStateMachine *state_machine,
   GQuark input;
 
   str = str_free = g_strdup (g_quark_to_string (condition));
-  if (str[0] == '!')
-    str++;
-
   separator = strchr(str, ':');
   if (separator)
     *separator = '\0';
+  while (str[0] == '!' || str[0] == '<' || str[0] == '>' || str[0] == '=')
+    str++;
 
   input = g_quark_try_string (str);
 
@@ -223,63 +223,140 @@ _condition_cmp (gconstpointer a, gconstpointer b)
   return 0;
 }
 
-/* XXX: If we had something ourself that isn't quite a GQuark,
- *      then this could be much faster (e.g. by toggling the MSB). */
-static GQuark
-_condition_negate (GQuark cond)
-{
-  const gchar *str = g_quark_to_string (cond);
-
-  if (str[0] == '!')
-    return g_quark_from_string (str + 1);
-  else
-    {
-      g_autofree gchar *new = NULL;
-
-      new = g_strconcat ("!", str, NULL);
-
-      return g_quark_from_string (new);
-    }
-}
-
 static void
-_condition_expand (GQuark active, GsmStateMachineCondition *condition, GArray *target)
+_condition_expand_positive (GQuark active, GsmStateMachineCondition *condition, GArray *target)
 {
-  gboolean found = FALSE;
-  gboolean negated = FALSE;
+  gboolean found;
+  gboolean lesser, greater;
 
   /* Active may be 0 if this is a boolean (i.e. only one value), in which case it means
-   * a negated input */
+   * it is the negated value; do a direct exit */
   if (active == 0)
-    g_assert (condition->conditions->len == 1);
-
-  if (active && g_quark_to_string (active)[0] == '!')
     {
-      negated = TRUE;
-      active = _condition_negate (active);
+      g_assert (condition->conditions->len == 1);
+
+      g_array_append_val (target, g_array_index (condition->conditions_neg, GQuark, 0));
+      return;
     }
 
+  switch (condition->type)
+    {
+    case GSM_CONDITION_TYPE_EQ:
+      lesser = FALSE;
+      greater = FALSE;
+      break;
+    case GSM_CONDITION_TYPE_GEQ:
+      lesser = TRUE;
+      greater = FALSE;
+      break;
+    case GSM_CONDITION_TYPE_LEQ:
+      lesser = FALSE;
+      greater = TRUE;
+      break;
+    }
+
+  found = FALSE;
   for (guint j = 0; j < condition->conditions->len; j++)
     {
+      gboolean cond_state;
+      gboolean this = FALSE;
+
       if (g_array_index (condition->conditions, GQuark, j) == active)
         {
           g_assert (found == FALSE);
           found = TRUE;
-          if (negated)
-            g_array_append_val (target, g_array_index (condition->conditions_neg, GQuark, j));
-          else
-            g_array_append_val (target, g_array_index (condition->conditions, GQuark, j));
+          this = TRUE;
         }
+
+      if (this)
+        cond_state = TRUE;
+      else if (found)
+        cond_state = greater;
       else
+        cond_state = lesser;
+
+      if (cond_state)
+        g_array_append_val (target, g_array_index (condition->conditions, GQuark, j));
+      else
+        g_array_append_val (target, g_array_index (condition->conditions_neg, GQuark, j));
+    }
+
+  g_assert (found == TRUE);
+}
+
+static void
+_condition_expand_no_overlap (GQuark active, GsmStateMachineCondition *condition, GArray *target)
+{
+  gboolean negated;
+  gint idx;
+  gboolean supress_same_state;
+  gboolean equal, lesser, greater;
+
+  for (idx = 0; idx < condition->conditions->len; idx++)
+    {
+      if (g_array_index (condition->conditions, GQuark, idx) == active)
         {
-          if (negated)
+          negated = TRUE;
+          break;
+        }
+      if (g_array_index (condition->conditions_neg, GQuark, idx) == active)
+        {
+          negated = FALSE;
+          break;
+        }
+    }
+  g_assert (idx < condition->conditions->len);
+
+  /* For the lesser/greater equal cases the non-negated states must be
+   * supressed as they always imply an overlap. */
+  switch (condition->type)
+    {
+    case GSM_CONDITION_TYPE_EQ:
+      equal = TRUE;
+      lesser = FALSE;
+      greater = FALSE;
+      supress_same_state = FALSE;
+      break;
+    case GSM_CONDITION_TYPE_GEQ:
+      equal = TRUE;
+      lesser = TRUE;
+      greater = FALSE;
+      supress_same_state = TRUE;
+      break;
+    case GSM_CONDITION_TYPE_LEQ:
+      equal = TRUE;
+      lesser = FALSE;
+      greater = TRUE;
+      supress_same_state = TRUE;
+      break;
+    }
+
+  if (negated)
+    {
+      equal = !equal;
+      lesser = !lesser;
+      greater = !greater;
+    }
+
+  for (guint j = 0; j < condition->conditions->len; j++)
+    {
+      gboolean cond_state;
+
+      if (j == idx)
+        cond_state = equal;
+      else if (j > idx)
+        cond_state = greater;
+      else
+        cond_state = lesser;
+
+      if (!supress_same_state || cond_state != negated)
+        {
+          if (cond_state)
             g_array_append_val (target, g_array_index (condition->conditions, GQuark, j));
           else
             g_array_append_val (target, g_array_index (condition->conditions_neg, GQuark, j));
         }
     }
-
-  g_assert (active == 0 || found == TRUE);
 }
 
 typedef gboolean (GsmConditionsCompareFunc) (GArray *set, GArray *conditions);
@@ -489,17 +566,17 @@ gsm_state_machine_state_add_transition (GsmStateMachine            *state_machin
   /* XXX: This is relatively slow unfortunately; but also executed seldomly! */
   for (guint i = 0; i < transition->conditions->len; i++)
     {
-      GQuark negated = _condition_negate (g_array_index (transition->conditions, GQuark, i));
-      GsmStateMachineCondition *condition = gsm_state_machine_condition_from_quark (state_machine, negated);
+      GQuark cond = g_array_index (transition->conditions, GQuark, i);
+      GsmStateMachineCondition *condition = gsm_state_machine_condition_from_quark (state_machine, cond);
 
-      _condition_expand (negated, condition, conditions_neg);
+      _condition_expand_no_overlap (cond, condition, conditions_neg);
     }
   g_array_sort (conditions_neg, _condition_cmp);
 
   if (gsm_state_machine_find_transition (state, transition->event, conditions_neg, _conditions_is_disjunct, &in_state) ||
       gsm_state_machine_children_find_transition (state, transition->event, conditions_neg, _conditions_is_disjunct, &in_state))
     {
-       g_critical ("Transition added to state \"%s\" conflicts with state \"%s\"",
+       g_critical ("Transition added to state \"%s\" conflicts with one in state \"%s\"",
                    g_quark_to_string (state->nick),
                    g_quark_to_string (in_state->nick));
        gsm_state_machine_transition_destroy (transition);
@@ -786,9 +863,9 @@ gsm_state_machine_internal_update_conditionals (GsmStateMachine *state_machine)
       condition = g_ptr_array_index (priv->input_conditions, i);
 
       gsm_state_machine_get_input_value (state_machine, g_quark_to_string (condition->input), &value);
-      active = condition->getter (condition->input, &value);
+      active = condition->getter (condition->input, condition->type, &value);
 
-      _condition_expand (active, condition, priv->active_conditions);
+      _condition_expand_positive (active, condition, priv->active_conditions);
     }
 
   g_array_sort (priv->active_conditions, _condition_cmp);
@@ -830,8 +907,6 @@ gsm_state_machine_internal_update_outputs (GsmStateMachine *state_machine, GsmSt
       sm_state_real = sm_state_real->parent;
     }
   while (output_missing);
-
-  g_debug ("emitting signals ");
 
   for (guint i = 0; i < priv->current_outputs->len; i++)
     {
@@ -1305,44 +1380,56 @@ gsm_state_machine_set_output_value (GsmStateMachine  *state_machine,
 
 
 void
-gsm_state_machine_create_condition (GsmStateMachine  *state_machine,
-                                    const gchar      *input,
-                                    const GStrv       conditions,
-                                    GsmStateMachineConditionFunc func)
+gsm_state_machine_create_condition (GsmStateMachine      *state_machine,
+                                    const gchar          *input,
+                                    const GStrv           conditions,
+                                    GsmConditionType      type,
+                                    GsmConditionFunc      func)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
   GsmStateMachineCondition *condition = NULL;
   guint conditions_len = g_strv_length (conditions);
 
   condition = gsm_state_machine_condition_new ();
+  condition->type = type;
   condition->input = g_quark_from_string (input);
   condition->getter = func;
 
   for (guint i = 0; i < conditions_len; i++)
     {
-      GQuark quark = g_quark_from_string (conditions[i]);
-      g_array_append_val (condition->conditions, quark);
-    }
-
-  g_array_sort (condition->conditions, _condition_cmp);
-
-  /* And generate the negated conditions in the same order */
-  for (guint i = 0; i < conditions_len; i++)
-    {
-      GQuark quark;
+      g_autofree gchar *cond = NULL;
       g_autofree gchar *cond_neg = NULL;
+      GQuark quark;
+      GQuark quark_neg;
 
-      cond_neg = g_strconcat ("!", g_quark_to_string (g_array_index (condition->conditions, GQuark, i)), NULL);
-      quark = g_quark_from_string (cond_neg);
+      switch (type)
+        {
+        case GSM_CONDITION_TYPE_EQ:
+          cond = g_strdup (conditions[i]);
+          cond_neg = g_strdup_printf ("!%s", conditions[i]);
+          break;
+        case GSM_CONDITION_TYPE_GEQ:
+          cond = g_strdup_printf (">=%s", conditions[i]);
+          cond_neg = g_strdup_printf ("<%s", conditions[i]);
+          break;
+        case GSM_CONDITION_TYPE_LEQ:
+          cond = g_strdup_printf ("<=%s", conditions[i]);
+          cond_neg = g_strdup_printf (">%s", conditions[i]);
+          break;
+        }
 
-      g_array_append_val (condition->conditions_neg, quark);
+      quark = g_quark_from_string (cond);
+      quark_neg = g_quark_from_string (cond_neg);
+
+      g_array_append_val (condition->conditions, quark);
+      g_array_append_val (condition->conditions_neg, quark_neg);
     }
 
   g_ptr_array_add (priv->input_conditions, condition);
 }
 
 static GQuark
-_state_machine_boolean_condition (GQuark condition, const GValue *value)
+_state_machine_boolean_condition (GQuark condition, GsmConditionType type, const GValue *value)
 {
   if (g_value_get_boolean (value))
     return condition;
@@ -1351,26 +1438,40 @@ _state_machine_boolean_condition (GQuark condition, const GValue *value)
 }
 
 static GQuark
-_state_machine_enum_condition (GQuark condition, const GValue *value)
+_state_machine_enum_condition (GQuark condition, GsmConditionType type, const GValue *value)
 {
   GEnumClass *enum_class = G_ENUM_CLASS (g_type_class_peek (value->g_type));
   GEnumValue *enum_class_value;
   gint enum_value = g_value_get_enum (value);
   const gchar *value_nick;
   g_autofree gchar *detailed_condition;
+  const gchar *prefix;
 
   enum_class_value = g_enum_get_value (enum_class, enum_value);
   value_nick = enum_class_value->value_nick;
 
   /* XXX: This is kinda ugly, right? Maybe we need some sort of API change ... */
-  detailed_condition = g_strconcat (g_quark_to_string (condition), "::", value_nick, NULL);
+  switch (type)
+    {
+    case GSM_CONDITION_TYPE_EQ:
+      prefix = "";
+      break;
+    case GSM_CONDITION_TYPE_GEQ:
+      prefix = ">=";
+      break;
+    case GSM_CONDITION_TYPE_LEQ:
+      prefix = "<=";
+      break;
+    }
+  detailed_condition = g_strdup_printf ("%s%s::%s", prefix, g_quark_to_string (condition), value_nick);
 
   return g_quark_try_string (detailed_condition);
 }
 
 void
-gsm_state_machine_create_default_condition (GsmStateMachine  *state_machine,
-                                            const gchar      *input)
+gsm_state_machine_create_default_condition (GsmStateMachine      *state_machine,
+                                            const gchar          *input,
+                                            GsmConditionType      type)
 {
   GsmStateMachinePrivate *priv = GSM_STATE_MACHINE_PRIVATE (state_machine);
   GsmStateMachineValue *input_value;
@@ -1387,6 +1488,7 @@ gsm_state_machine_create_default_condition (GsmStateMachine  *state_machine,
       gsm_state_machine_create_condition (state_machine,
                                           input,
                                           (const GStrv) conditions->pdata,
+                                          type,
                                           _state_machine_boolean_condition);
     }
   else if (g_type_is_a (G_PARAM_SPEC_VALUE_TYPE (input_value->pspec), G_TYPE_ENUM))
@@ -1407,6 +1509,7 @@ gsm_state_machine_create_default_condition (GsmStateMachine  *state_machine,
       gsm_state_machine_create_condition (state_machine,
                                           input,
                                           (const GStrv) conditions->pdata,
+                                          type,
                                           _state_machine_enum_condition);
     }
   else
